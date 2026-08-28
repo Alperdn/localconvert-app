@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Default capabilities for LocalConvert - Phase 1 (Secure Desktop Foundation): trimmed to exactly what the frontend calls, with fs/asset-protocol access to arbitrary user files granted per-file at runtime (see security::fs_scope) rather than as a static broad directory grant.",
+  "description": "Default capabilities for LocalConvert - Phase 1 (Secure Desktop Foundation): trimmed to exactly what the frontend calls, with fs/asset-protocol access to arbitrary user files granted per-file at runtime (see security::fs_scope) rather than as a static broad directory grant. No static fs:scope entry: the frontend never reads/writes $APPDATA or $APPLOCALDATA directly (grep-verified - the app-data directory is only touched from Rust, which isn't gated by capabilities), so there is nothing for a static grant to cover.",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -17,10 +17,6 @@
     "dialog:allow-ask",
 
     "fs:allow-read-file",
-    "fs:allow-write-file",
-    {
-      "identifier": "fs:scope",
-      "allow": ["$APPDATA/**", "$APPLOCALDATA/**"]
-    }
+    "fs:allow-write-file"
   ]
 }

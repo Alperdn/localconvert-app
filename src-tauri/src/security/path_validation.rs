@@ -265,7 +265,12 @@ mod tests {
         fs::write(&file, b"pdf-ish").unwrap();
 
         let result = validate_fs_scope_target(file.to_str().unwrap()).unwrap();
-        assert_eq!(result, file.canonicalize().unwrap());
+        // Compare against the same `\\?\`-normalized form the function
+        // itself returns - on Windows, `Path::canonicalize()` alone
+        // produces a `\\?\`-prefixed extended-length path, which is a
+        // different (if equivalent) string from what
+        // `validate_fs_scope_target` returns after normalization.
+        assert_eq!(result, normalize_windows_prefix(file.canonicalize().unwrap()));
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -277,7 +282,7 @@ mod tests {
 
         let result = validate_fs_scope_target(not_yet_created.to_str().unwrap()).unwrap();
         assert_eq!(result.file_name().unwrap(), "edited_copy.pdf");
-        assert_eq!(result.parent().unwrap(), dir.canonicalize().unwrap());
+        assert_eq!(result.parent().unwrap(), normalize_windows_prefix(dir.canonicalize().unwrap()));
         fs::remove_dir_all(&dir).ok();
     }
 

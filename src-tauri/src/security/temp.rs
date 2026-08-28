@@ -3,7 +3,9 @@
 //! Every conversion job gets its own directory under the OS temp
 //! directory:
 //!
-//!     <temp>/localconvert/jobs/<uuid>/
+//! ```text
+//! <temp>/localconvert/jobs/<uuid>/
+//! ```
 //!
 //! The external tool writes its output *there*, never directly into
 //! the user's chosen output folder. Only after the tool reports

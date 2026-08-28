@@ -44,15 +44,20 @@ pub fn authorize_file(app: &AppHandle, path: &Path) -> Result<(), String> {
         .allow_file(path)
         .map_err(|e| format!("Failed to authorize file access: {}", e))?;
 
-    // The asset-protocol scope is only compiled in when the
-    // `protocol-asset` Cargo feature is enabled (it is - see
-    // src-tauri/Cargo.toml - because the video trimmer's preview player
-    // needs it). Feature-gate defensively anyway so this module keeps
-    // compiling if that feature is ever toggled off.
-    #[cfg(feature = "protocol-asset")]
-    {
-        let _ = app.asset_protocol_scope().allow_file(path);
-    }
+    // `asset_protocol_scope()` is provided by `tauri`'s own
+    // `protocol-asset` Cargo feature, which `src-tauri/Cargo.toml`
+    // enables unconditionally on the `tauri` dependency (it's needed for
+    // the video trimmer's `convertFileSrc` preview). That's a different
+    // thing from a feature *of this crate* - there is no `protocol-asset`
+    // entry in this crate's own `[features]` table, so a
+    // `#[cfg(feature = "protocol-asset")]` guard here would always
+    // evaluate false ("unexpected cfg condition value", and silently
+    // dead code: the video preview's asset-protocol grant would never
+    // actually run). Since the method is unconditionally available given
+    // how the dependency is declared, call it unconditionally too.
+    app.asset_protocol_scope()
+        .allow_file(path)
+        .map_err(|e| format!("Failed to authorize asset-protocol access: {}", e))?;
 
     Ok(())
 }

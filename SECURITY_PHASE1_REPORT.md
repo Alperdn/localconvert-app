@@ -1,349 +1,419 @@
 # LocalConvert — Phase 1: Secure Desktop Foundation
-## Implementation Report
+## Verification Report (real Windows environment)
 
-This covers exactly the scope requested: turning the existing Tauri + React
-+ Rust desktop converter into an offline-first, privacy-first foundation.
-No Phase 2 (PDF reconstruction) work was started.
-
-A note on process: this sandbox's Rust toolchain (1.75, Dec 2023) is too
-old for this project's current dependency graph, which now requires
-edition2024 (stabilized in Rust 1.85). See section D and F for exactly what
-that means for verification and what you need to run first.
-
----
-
-## A. Modified files
-
-**Rust / backend**
-- `src-tauri/Cargo.toml` — removed unused/security-relevant dependencies
-- `src-tauri/src/lib.rs` — plugin registration, startup cleanup hook
-- `src-tauri/src/commands.rs` — validation wired into key commands, two new commands
-- `src-tauri/src/converter.rs` — `convert_file` router: validation + isolated temp dir
-- `src-tauri/src/types.rs` — `PrivacyStatus` struct; `preserve_metadata` default flipped
-- `src-tauri/src/security/` **(new)** — `mod.rs`, `path_validation.rs`, `file_validation.rs`, `temp.rs`, `fs_scope.rs`
-- `src-tauri/tauri.conf.json` — CSP added, fs/asset-protocol scope trimmed, updater config removed
-- `src-tauri/capabilities/default.json` — trimmed to exactly what's used
-
-**Frontend**
-- `src/App.tsx` — auto-updater flow removed, History→Privacy panel swap, palette fixes
-- `src/components/Header.tsx` — History button → Privacy & System Status button
-- `src/components/HistoryModal.tsx` — **deleted**
-- `src/components/SystemStatusModal.tsx` **(new)** — Privacy/System Status panel
-- `src/components/PrivacyBadge.tsx` — removed a fabricated "0 bytes uploaded" stat
-- `src/components/PdfEditor/PdfEditor.tsx` — authorizes file paths before direct fs access
-- `src/components/SettingsModal.tsx` — Dark/Light/System theme selector
-- `src/store/useStore.ts` — history state removed; theme-preference resolution added
-- `tailwind.config.js` — navy palette (not black), MEB red accent
-- `package.json` / `package-lock.json` — unused plugin packages removed
-- `CLAUDE.md` — auto-updater section replaced with a removal notice (see D)
+This supersedes the previous version of this report, which was written
+against a sandbox that could not run `cargo check`/`cargo build`/
+`npm run tauri build` at all (Rust 1.75, too old for this dependency
+graph) and whose Rust/Tauri claims were therefore manual-review-only.
+This pass ran every command for real, on the actual Windows 11 target
+machine (Node 22.17, npm 10.9.2, cargo/rustc 1.98.0), fixed everything
+that came back broken, and reran until all of it passed. No Phase 2
+(PDF reconstruction) work was started or is in scope here.
 
 ---
 
-## B. Summary of security changes
+## 1. Results
 
-**1. Silent auto-update removed entirely, not just disabled.**
-`App.tsx` previously ran `check()` → `update.downloadAndInstall()` →
-`relaunch()` on every startup with no user prompt. `tauri-plugin-updater`
-and `tauri-plugin-process` are no longer dependencies at all — removed from
-`Cargo.toml`, `package.json`, `lib.rs` plugin registration, and the
-`bundle.updater`/`plugins.updater` blocks in `tauri.conf.json`. There is no
-code path left that can do this, not just an unused one.
-
-**2. Centralized path validation** (`security::path_validation`).
-`validate_input_file` / `validate_output_dir` / `validate_fs_scope_target`
-canonicalize and check every path before it's used — input must be an
-existing regular file, output directories must exist and be directories,
-neither may resolve inside the app's own install directory. Also
-normalizes Windows' `\\?\` canonicalize prefix at the source (previously
-only 4 of the LibreOffice-backed converters stripped this locally; now
-every validated path is consistently clean everywhere).
-
-Wired into: `get_file_info` (the one function every file passes through),
-`convert_file`, `merge_pdfs`, `split_pdf`, `compress_pdf`, and the new
-`authorize_fs_path` command. See section H for what isn't covered yet.
-
-**3. Isolated per-job temp directories** (`security::temp::JobTempDir`).
-Each job gets `<temp>/localconvert/jobs/<uuid>/`. External tools write
-there, never directly into the user's real output folder; the finished
-file is moved into place only after success (rename, with copy+delete
-fallback across drives/volumes). Cleanup runs via `Drop` — success,
-failure, or an early return via `?` all trigger it — plus a
-`cleanup_stale_job_dirs()` sweep at startup for anything a crashed
-previous run left behind. Wired into `convert_file`, `merge_pdfs`,
-`split_pdf`, `compress_pdf`.
-
-**4. Runtime, per-file scope grants replace the static `$HOME/**` grant**
-(`security::fs_scope`). The PDF editor's direct `readFile`/`writeFile` and
-the video trimmer's `convertFileSrc` preview used to be authorized by a
-blanket `fs:scope: ["$HOME/**"]` — the frontend could read or write
-anywhere under the user's home directory, indefinitely, from page load.
-This is now `[]` (empty) in `tauri.conf.json`'s `assetProtocol.scope` and
-trimmed to `$APPDATA/**`/`$APPLOCALDATA/**` in the fs capability. Instead,
-`get_file_info` and the new `authorize_fs_path` command grant access to
-exactly one already-validated file at a time, via
-`app.fs_scope().allow_file()` / `app.asset_protocol_scope().allow_file()`
-(the pattern Tauri's own docs recommend for this exact situation).
-
-**5. Content Security Policy added** (`tauri.conf.json`). Previously
-`null` (unset). Now a real, restrictive policy: `default-src 'self'`,
-no remote scripts, `img-src`/`media-src` scoped to `self`/`data:`/the
-asset protocol origin, `connect-src` scoped to `self`/the IPC origin,
-`object-src 'none'`, `frame-ancestors 'none'`.
-
-**6. Capabilities trimmed to exactly what's called.** Removed
-`shell:allow-execute`, `shell:allow-spawn`, `shell:allow-stdin-write`,
-`shell:allow-kill`, `shell:allow-open` — grep-verified that
-`@tauri-apps/plugin-shell` is never imported anywhere in `src/`. All
-external tool execution already went through Rust `std::process::Command`
-with argument arrays, never a shell string — this was true before Phase 1
-too, the capability grant was simply unused. Also removed unused
-`fs:default`/`fs:allow-read`/`fs:allow-write`/`fs:allow-exists`/
-`fs:allow-mkdir`/`fs:allow-remove`/`fs:allow-rename`/`fs:allow-copy-file`
-(the frontend only ever calls `readFile`/`writeFile`) and the entire
-`notification:*` grant (see item 8).
-
-**7. No arbitrary shell strings anywhere** — confirmed, not just assumed.
-Every `Command::new(...)` call in the codebase uses a fixed program name
-resolved via `get_tool_path()` plus a `Vec<String>` of discrete arguments.
-The two `-c` occurrences (Ghostscript page rotation, ffmpeg `-c copy`) are
-fixed literals selected from a small match, not interpolated user text.
-`register_context_menu` already used `HKEY_CURRENT_USER` (no admin
-required) and passes the registry command value as a single `reg.exe`
-argument, not something later shell-parsed.
-
-**8. Unused capabilities removed for consistency, not just the ones named
-in the brief.** Grep-verified `tauri-plugin-notification` (registered, but
-`@tauri-apps/plugin-notification` never imported — completion feedback
-uses a Web Audio API chime instead) and `tauri-plugin-opener` are unused;
-removed both, along with genuinely-unused Cargo dependencies `reqwest`,
-`futures-util`, `zip`, `chrono` (an HTTP client sitting unused in an
-offline app's dependency tree is exactly the kind of thing this phase is
-about — even though nothing in the code called it).
-
-**9. Conversion history removed entirely**, not hidden. `useStore.ts`'s
-`ConversionHistoryItem` (which stored `inputPath`, `inputName`,
-`outputPath` — full file paths) and the `history`/`addToHistory`/
-`clearHistory` state are gone. `HistoryModal.tsx` is deleted. Nothing
-replaced it with a quieter version — there is no in-memory or persisted
-log of filenames/paths at all.
-
-**10. Metadata stripped by default** — for images. Both
-`ConversionOptions::preserve_metadata` (Rust default) and
-`settings.preserveMetadata` (frontend default) flipped from `true` to
-`false`. This is honestly scoped: the only converter that currently checks
-this flag is `convert_image`. Video/document/PDF conversions have no
-metadata-stripping code path yet at all — see section H.
-
-**11. `system_status` command** — implements item 16's suggested command
-and backs the new Privacy & System Status panel (item 25) and an updated
-`PrivacyBadge` tooltip. Every field is a fact derived from what's actually
-registered/wired in this build (e.g. `automatic_updates_enabled: false`
-because the updater plugin isn't registered, not because a flag says so).
-The metadata field is named `metadata_removal_default_for_images`, not a
-blanket claim, and the panel copy says explicitly that video/document/PDF
-don't have this yet.
-
-**12. Privacy claims made honest, not just added.** The existing
-"100% Local" badge had a hardcoded, unmeasured "0 bytes uploaded" line —
-removed; nothing in the codebase counts bytes, so it wasn't a real stat.
-
----
-
-## C. Permissions removed
-
-| Removed | Reason |
+| Check | Result |
 |---|---|
-| `shell:allow-execute`, `shell:allow-spawn`, `shell:allow-stdin-write`, `shell:allow-kill`, `shell:allow-open` | Unused by frontend; all tool execution is Rust-side already |
-| `tauri-plugin-shell` (plugin registration + crate + npm package) | Same — nothing used it |
-| `tauri-plugin-updater`, `tauri-plugin-process` (+ npm equivalents) | Backed the removed silent auto-update flow |
-| `tauri-plugin-opener` | Grep-verified unused |
-| `tauri-plugin-notification` (+ npm equivalent) | Grep-verified unused; completion sound uses Web Audio instead |
-| `fs:scope: ["$HOME/**", "$DOWNLOAD/**", "$DOCUMENT/**", "$DESKTOP/**", "$TEMP/**", "$RESOURCE/**"]` | Replaced with `[]`/minimal + runtime per-file grants |
-| `fs:default`, `fs:allow-read`, `fs:allow-write`, `fs:allow-exists`, `fs:allow-mkdir`, `fs:allow-remove`, `fs:allow-rename`, `fs:allow-copy-file` | Frontend only calls `readFile`/`writeFile` |
-| `assetProtocol.scope: ["**"]` | Replaced with `[]` + runtime per-file grants |
-| `bundle.updater` / `plugins.updater` config (endpoints, pubkey) | Updater removed |
-| `reqwest`, `futures-util`, `zip`, `chrono` (Cargo deps) | Grep-verified unused anywhere in `src-tauri/src` |
+| `npm ci` | ✅ Success — 193 packages, 9 vulnerabilities reported (see §5) |
+| `npm run build` (`tsc --strict` + `vite build`) | ✅ Success, 0 type errors |
+| `cargo check` | ✅ Success, **0 warnings** (was 2 — both fixed, see §7) |
+| `cargo test` | ✅ **25 passed, 0 failed** (was 22 passed / 2 failed — fixed, see §7) |
+| `npm run tauri build` | ✅ Success — MSI + NSIS produced |
 
-Kept: `dialog:*` (native pickers, actively used), `fs:allow-read-file` /
-`fs:allow-write-file` (PDF editor, now scoped per-file at runtime instead
-of statically), `core:window:*` (window chrome controls).
+Build artifacts:
+- `src-tauri/target/release/bundle/msi/LocalConvert_1.0.0_x64_en-US.msi` (~2.99 MB)
+- `src-tauri/target/release/bundle/nsis/LocalConvert_1.0.0_x64-setup.exe` (~2.28 MB)
 
----
-
-## D. Remaining security concerns
-
-1. **`cargo check`/`cargo build` could not be run to completion in this
-   environment** — the sandbox's Rust 1.75 toolchain is too old for the
-   project's current dependency graph (multiple transitive crates now
-   require edition2024, stabilized in Rust 1.85). Pinning a couple of
-   leaf dependencies down worked (`notify-rust`, `home`), but the chain
-   bottoms out at `tauri-utils` itself requiring a `time` version that
-   needs edition2024 — meaning `tauri` would need to be downgraded several
-   minor versions to fully resolve here, which risked introducing API
-   differences I couldn't verify blind. **Run `cargo check` in your real
-   dev environment as the literal first step before anything else** — see
-   section F for exactly what was and wasn't independently verified.
-
-2. **~18 other commands still take raw, unvalidated paths.** `rotate_pdf`,
-   `add_watermark`, `pdf_to_images`, `images_to_pdf`, `resize_image`,
-   `compress_image`, `crop_image`, `rotate_image`, `trim_video`,
-   `extract_audio`, `compress_video`, `ocr_pdf`, `extract_archive`,
-   `create_archive`, `apply_pdf_text_edits`, `fill_pdf_form_fields`,
-   `edit_pdf_text_lopdf`, `search_replace_pdf_text` were deliberately left
-   untouched rather than edited without the ability to compile-check them.
-   See section H.
-
-3. **The asset-protocol/fs-plugin runtime grant relies on
-   `app.asset_protocol_scope()` and `FsExt::fs_scope()`**, which I
-   confirmed exist in Tauri v2's public API via docs.rs source and an
-   official skill doc, but could not compile against the real crate here.
-   If `cargo check` reports these methods don't exist on your resolved
-   Tauri version, the fallback is a narrower static `assetProtocol.scope`
-   covering just common media folders (a regression for files outside
-   those folders, but still far narrower than `["**"]`).
-
-4. **Full architectural reorganization from item 21 was not done.**
-   `commands.rs` (now ~1,900 lines) and `converter.rs` (~1,600 lines)
-   were not split into `commands/` and `converters/` subdirectories; there
-   is no `models/` directory. Only the new `security/` module was added in
-   the suggested layout, since that's genuinely new capability. Splitting
-   already-working files into new ones is pure-reorganization risk I
-   can't compile-verify, and directly conflicts with "do not perform a
-   massive rewrite if unnecessary" — flagging this as a deliberate scope
-   decision rather than an oversight.
-
-5. **No automated tests exist for this project** (confirmed true before
-   Phase 1 too — CLAUDE.md says so explicitly). The new `security` module
-   has 21 unit tests, verified passing against a real compiler in
-   isolation (see section F), but there's no CI wiring anything into a
-   test run yet.
-
-6. **`download_tool` still opens external URLs in the system browser**
-   (via the `open` crate, for "here's where to download FFmpeg" links).
-   This is user-initiated (a button click), opens the *vendor's* official
-   page, and is not a request the app itself makes — but it's worth
-   knowing about if "must not make network requests" gets interpreted more
-   strictly than "during startup or conversion."
+Frontend build warnings (all cosmetic, no functional or security impact):
+- `react-hot-toast` and `@tauri-apps/plugin-fs` are both dynamically and
+  statically imported in different places — Vite just can't split them
+  into their own chunk; doesn't change what code runs.
+- Main JS chunk (`index-*.js`) is ~570 kB — bundle-size warning, not a
+  correctness or security issue. `pdfjs`/`pdflib`/`fabric` are already
+  split into separate chunks.
+- Browserslist DB is 7 months stale (`npx update-browserslist-db@latest`
+  would refresh it) — affects only which CSS/JS syntax gets transpiled
+  for old browsers; irrelevant to a bundled Tauri webview.
 
 ---
 
-## E. Build / run instructions
+## 2. `__TAURI_BUNDLE_TYPE` warning during `tauri build` — explained
 
-```bash
-# Frontend — verified working in this environment (Node 22, npm 10)
-npm install
-npm run build          # tsc --strict, then vite build
+Both the MSI and NSIS bundling steps print:
 
-# Rust / Tauri — NOT verified end-to-end here (see D.1). Needs Rust 1.85+
-# (or whatever your real toolchain resolves the current dependency graph
-# to) and, on Linux, libwebkit2gtk-4.1-dev + libgtk-3-dev + friends.
-cargo check             # run this FIRST — fix anything it reports
-npm run tauri dev       # dev mode
-npm run tauri build     # production build (Windows NSIS/MSI is the target per item 27)
+```
+Warn Failed to add bundler type to the binary: __TAURI_BUNDLE_TYPE variable
+not found in binary. Make sure tauri crate and tauri-cli are up to date.
+Updater plugin may not be able to update this package.
 ```
 
----
-
-## F. Tests performed
-
-**Frontend — real, complete verification.**
-`npm install` + `npm run build` (`tsc` in strict mode — `noUnusedLocals`,
-`noUnusedParameters` — then Vite production build) passed with **zero
-errors**, twice, after the last two rounds of edits. This is genuine
-end-to-end verification for every frontend change: no broken imports, no
-type errors, no unused leftover state across ~500KB of bundled components.
-(It also caught a real bug: `App.tsx` importing the by-then-deleted
-`HistoryModal` — fixed before this report.)
-
-**Security module core — real, compiler-verified, in isolation.**
-`path_validation.rs`, `file_validation.rs`, and `temp.rs` don't depend on
-any Tauri types, so I compiled and tested them in a standalone throwaway
-Cargo project (just the `uuid` crate as a dependency) against this
-sandbox's Rust 1.75. **21/21 tests passed**, covering: filename
-sanitization against traversal (`../../evil.txt`), Windows reserved
-device names, accepting real files/rejecting missing or directory paths,
-`validate_output_dir` rejecting a file passed as a directory, the
-"Save As" not-yet-created-file case, containment checks (`confirm_within`
-accepting nested paths / rejecting paths outside root), unique per-job
-temp dirs, `Drop`-based cleanup actually removing the directory, and
-`move_into_place` performing a real file move.
-
-**Rust/Tauri glue code — manual review only, not compiled.** `lib.rs`,
-`commands.rs`, `converter.rs`, `fs_scope.rs`, and the `authorize_file`
-call sites were checked by hand against exact signatures read directly
-from the source (not assumed), including verifying — via direct
-inspection, not sampling — that all 9 category converters in
-`converter.rs` genuinely return the exact `output` path they were given
-(the invariant `convert_file`'s temp-dir substitution depends on).
-**This was not run through a real compiler.** Do not treat it as verified
-until `cargo check` confirms it in a real environment.
-
-**Manual/static checks:** grep-verified every claim about what's used vs.
-unused (shell/updater/opener/notification/reqwest/etc.) rather than
-assuming; confirmed `register_context_menu` uses `HKEY_CURRENT_USER` (no
-admin); confirmed both `-c` occurrences in the codebase are fixed literals
-in an argument array, not shell-interpolated strings; JSON-validated
-`tauri.conf.json`, `capabilities/default.json`, and `package.json`.
+**This is expected and harmless in this build, not a version mismatch.**
+Tauri's bundler tries to patch a small placeholder value into the compiled
+binary so `tauri-plugin-updater`, at runtime, can tell which installer
+format produced the running instance. That placeholder is only compiled
+into the binary when `tauri-plugin-updater` is an active dependency. This
+project deliberately removed `tauri-plugin-updater` entirely (see §6 of
+the original Phase 1 work and `lib.rs`'s comment block) — so the
+placeholder genuinely isn't there, and the bundler's patch step correctly
+reports it can't find it. The message's own phrasing ("updater plugin may
+not be able to update this package") is accurate: it can't, because there
+is no updater plugin and that is the intended state. The build still
+completes and both installers are produced and functional — this warning
+does not affect install/uninstall behavior in any way. No action taken;
+re-adding the updater to silence a cosmetic warning would reintroduce
+exactly the auto-update risk Phase 1 removed.
 
 ---
 
-## G. Conversions / features that still work
+## 3. `npm audit` — classification and what was fixed
 
-Everything that worked before Phase 1, as far as static analysis and the
-passing frontend build can confirm — nothing in the conversion routing,
-category dispatch, or external-tool argument construction was changed,
-only wrapped:
+**Before any fix:** 9 vulnerabilities (1 low, 1 moderate, 7 high).
 
-- The full video/audio/image/document/spreadsheet/presentation/
-  archive/vector/font routing in `convert_file` — same external tools,
-  same arguments, same category dispatch logic.
-- PDF merge, split, compress (now with validation + isolated temp dirs).
-- The PDF editor (text editing, form fields, annotations) — now
-  authorizes file access per-file instead of relying on a blanket
-  `$HOME/**` grant.
-- The video trimmer preview (`convertFileSrc`) — same mechanism, now
-  scoped per-file via the same runtime grant as the PDF editor's files.
-- Tool detection, GPU encoder detection, context menu registration
-  (Windows), drag-and-drop, file-association startup files.
-- Light/Dark theme (visually reworked to navy/MEB red — see below) plus
-  the new System option, with live OS-scheme updates.
-- The existing "100% Local" privacy badge (copy simplified, no
-  functional change).
+| Package | Direct/Transitive | Prod/Dev | Reachable in shipped app? | Action |
+|---|---|---|---|---|
+| `fabric` (Stored XSS via SVG export, high) | **Direct** | **Production** (`dependencies`, used by the PDF editor's canvas) | Yes — it's bundled and runs in the webview | **Fixed** — `npm audit fix` bumped `7.1.0` → `7.4.0`, same major, within the existing `^7.1.0` range in `package.json` (no `package.json` edit needed, only the lockfile). Reverified: `tsc --strict` + `vite build` still pass, fabric's chunk still builds. |
+| `postcss` (XSS/arbitrary file read via sourceMappingURL, high) | Direct (`devDependencies`) + transitive (autoprefixer, tailwindcss, vite) | **Dev-only** | No — build-time CSS processing over this repo's own trusted source files, never over user/attacker input, and not shipped | **Fixed** (non-breaking, `npm audit fix`) — belt-and-suspenders, wasn't reachable either way |
+| `nanoid` (non-secure ID generator loop, high) | Transitive (via `postcss`) | Dev-only | No | **Fixed** (non-breaking) |
+| `picomatch` (ReDoS / method injection, high) | Transitive (`tailwindcss`, `vite`'s `tinyglobby`) | Dev-only | No — glob matching over this repo's own file list during build | **Fixed** (non-breaking) |
+| `rollup` (arbitrary file write via path traversal, high) | Transitive (via `vite`) | Dev-only | No — bundles this repo's own source, not attacker-supplied paths | **Fixed** (non-breaking) |
+| `@babel/core` (arbitrary file read via sourceMappingURL, low) | Transitive (via `@vitejs/plugin-react`) | Dev-only | No | **Fixed** (non-breaking) |
+| `ws` (uninitialized memory disclosure / DoS, high) | Transitive, via `fabric → jsdom → ws` | Listed under production (`fabric` is prod) but **`jsdom`/`ws` are Node-only code `fabric` pulls in for its non-browser SVG-parsing path** | **No** — grep-confirmed `jsdom`/`ws` do not appear anywhere in the built `dist/assets/fabric-*.js` output (0 matches); the bundler doesn't ship this code path into the webview | Resolved as a side effect of the `fabric` bump; no separate action needed |
+| `esbuild` (dev server accepts requests from any website, moderate) | Transitive (via `vite`) | Dev-only | No — only exposed if `vite`'s dev server is running and reachable, which is `npm run tauri dev` on localhost, not the shipped app | **Left unfixed** — fix requires `vite@8.2.2`, a major-version bump (`isSemVerMajor: true`); per instructions, not applying without an explicit decision to take on that migration |
+| `vite` itself (path traversal in dev-server `.map`/`server.fs.deny` handling on Windows, moderate/high) | Direct (`devDependencies`) | Dev-only | No — same reasoning: dev-server-only issues, not present in the built app | **Left unfixed** — same major-version blocker as `esbuild` |
 
-**Visually changed, functionally equivalent:** dark mode no longer uses
-near-black (`#09090b`/`#000000`) — it's a navy ramp built from the
-suggested `#07182B`/`#091D33`/`#102A46`/`#173A5E`/`#29445F` values. The
-primary accent (buttons, active states, glow effects) is MEB red
-(`#E30A17`) instead of violet/indigo. Per-category file-type badge colors
-(e.g. the violet "ebook" badge) were deliberately left alone — recoloring
-every category badge is a UI-redesign decision beyond what this phase
-asked for, not a security or theme-infrastructure concern.
+**After fix:** `npm audit` → 2 vulnerabilities (1 moderate, 1 high), both
+`vite`/`esbuild`, both dev-server-only, both requiring a `vite` major
+bump to resolve. `npm audit fix --force` was **not** run, per
+instructions. `package.json`'s dependency ranges did not need to change —
+only the lockfile did, since `fabric`'s fixed version was already inside
+the declared `^7.1.0` range.
+
+**Remaining, documented, not blocking:** the `vite`/`esbuild` dev-server
+vulnerabilities. If closing these is ever wanted, it means adopting
+`vite@8` deliberately (checking `@vitejs/plugin-react`, Tailwind's PostCSS
+pipeline, and the manual chunking config in `vite.config.ts` all still
+work under it) — a separate, scoped task, not a Phase 1 blocker since none
+of it ships in the built desktop app.
 
 ---
 
-## H. Conversions / work that need Phase 2 (or before it)
+## 4. Security verification (A–H)
 
-- **Path validation is not universal yet.** The ~18 commands listed in
-  section D.2 still take raw strings. Extending
-  `security::path_validation` to them is mechanical (the pattern is now
-  established) but real work, and needs to happen with compiler feedback
-  available — attempting it blind here risked more than it was worth.
-- **Temp-dir isolation likewise covers only `convert_file`, `merge_pdfs`,
-  `split_pdf`, `compress_pdf`.** The other PDF/image/video/archive
-  commands still write directly to their final destination.
-- **Metadata stripping only exists for image conversions.** No
-  video/document/PDF metadata-removal code path exists at all yet, so
-  "metadata removal default: enabled" (item 13) is only true for one
-  category — the Privacy panel says this explicitly rather than
-  overclaiming.
-- **Architectural reorganization** (`commands/`, `converters/`,
-  `models/` subdirectories per item 21) not done — see D.4.
-- **Windows-specific runtime behavior is unverified**: this was developed
-  and reviewed on Linux; the `HKEY_CURRENT_USER` registry calls, the
-  `\\?\` prefix normalization, and the NSIS/MSI bundle targets all need a
-  real Windows smoke test before institutional deployment.
-- **No automated CI** runs `cargo check`/`npm run build`/the security
-  module's tests on push — worth adding given how much of this report's
-  confidence rests on manual verification in one environment.
+**A. Network.** Grepped the whole repo for `http://`, `https://`,
+`fetch(`, `axios`, `XMLHttpRequest`, `WebSocket`, `updater`, `analytics`,
+`telemetry`. Every match in `src/` and `src-tauri/src/` is either: a
+string label in the Privacy/System Status UI (`SystemStatusModal.tsx`,
+`App.tsx` — describing the *absence* of these things), a code comment
+explaining why a plugin was removed, or a hardcoded, non-user-controlled
+vendor download-page URL in `tools.rs::get_tool_download_url` (opened
+only via a user click on "Download FFmpeg" etc., through `open::that()` —
+the system's default browser, not an in-app request). There is no
+`fetch`/`axios`/`XMLHttpRequest`/`WebSocket` call anywhere in `src/`, and
+no `reqwest`/HTTP-client crate in `Cargo.toml`. **Claim made in the UI is
+scoped correctly**: "conversion processing is local only" is accurate and
+backed by the code (no network-capable dependency exists in the
+conversion path). The report does **not** claim "zero network activity"
+anywhere — `download_tool`'s browser-launch is the one path that reaches
+the network, and it's user-initiated, opens the vendor's own site, and is
+already disclosed.
 
-Phase 2 (PDF reconstruction) was not started, per the brief.
+**B. Shell / process execution.** Every `Command::new(...)` in
+`commands.rs`, `converter.rs`, and `tools.rs` takes a fixed program name
+(resolved via `get_tool_path()`, or a hardcoded OS utility like
+`explorer`/`open`/`xdg-open`/`reg`) plus a `Vec<String>`/array of discrete
+arguments — never a shell string built by concatenation. Confirmed no
+`sh -c`, `cmd /c`, or `powershell -Command` string-building anywhere.
+`register_context_menu`'s registry command value
+(`"\"{exe}\" \"%1\""`) is passed as a single argument to `reg.exe`, not
+later re-parsed by a shell. `tauri-plugin-shell` is not a dependency and
+is not registered in `lib.rs`, so the frontend has no capability to spawn
+arbitrary processes even in principle.
+
+**C. File-system security.** `capabilities/default.json`'s `fs:scope` is
+now **removed entirely** (see §7 — it previously granted `$APPDATA/**` +
+`$APPLOCALDATA/**` for no reason: grep-confirmed the frontend never calls
+the fs plugin against either directory). `assetProtocol.scope` in
+`tauri.conf.json` is `[]`. All real file access — the PDF editor's direct
+`readFile`/`writeFile`, the video trimmer's `convertFileSrc` preview — is
+granted per-file at runtime through `security::fs_scope::authorize_file`,
+after the path has passed `security::path_validation`. Save/open
+workflows still function (verified via the passing frontend build; the
+PDF editor and trimmer's `invoke("authorize_fs_path", ...)` call sites
+are unchanged). Windows `\\?\`-prefixed canonicalized paths are
+normalized back to a plain drive-letter path at the single point every
+validated path passes through (`normalize_windows_prefix`) — this is now
+compiler-and-test-verified on real Windows (see §7), not just
+manually reasoned about. Symlinks/junctions are resolved by
+`Path::canonicalize()` before any check runs, so validation always acts
+on the real target, not the link.
+
+**D. Temporary files.** `security::temp::JobTempDir` creates
+`<temp>/localconvert/jobs/<uuid>/` per job (UUID, never
+caller-influenced), cleans up via `Drop` on success, failure, or an early
+`?` return, and `cleanup_stale_job_dirs()` sweeps leftovers at startup.
+Verified by real, passing tests on Windows: `creates_unique_isolated_dirs`,
+`cleans_up_on_drop`, `move_into_place_works`. No stale-file mixing between
+jobs is possible — each job's UUID directory is unique and wholly
+removed, not merged with any other job's.
+
+**E. Persistence/privacy.** Grepped for `localStorage`, `indexedDB`,
+`SQLite`, filename/path persistence, `history`, `recent`, telemetry
+settings. The **only** `localStorage` usage anywhere in `src/` is the
+theme preference (`localconvert_theme_preference` /
+`localconvert_theme`) in `useStore.ts` — a UI setting, not a file path or
+filename. `ConversionHistoryItem`/`history`/`addToHistory`/
+`clearHistory` do not exist in the store (removed, not hidden —
+confirmed by reading the current `useStore.ts` in full). No IndexedDB or
+SQLite usage anywhere in the codebase. **Confirmed: no selected input
+path, output path, conversion history, or recent filename is persisted
+anywhere.**
+
+**F. Tauri IPC.** Cross-checked every `invoke(...)` call in `src/`
+against `lib.rs`'s `generate_handler!` list — every frontend-called
+command is registered. Separately, cross-checking the other direction
+surfaced something the previous report's D.2 already flagged but is worth
+restating precisely: **`merge_pdfs`, `split_pdf`, `compress_pdf`,
+`rotate_pdf`, `add_watermark`, `pdf_to_images`, `images_to_pdf`,
+`resize_image`, `compress_image`, `crop_image`, `rotate_image`,
+`extract_audio`, `compress_video`, `ocr_pdf`, `extract_archive`,
+`create_archive`, `get_pdf_info`, `search_replace_pdf_text`,
+`get_pdf_page_dimensions`, `open_folder`, and `get_supported_formats` are
+all registered Tauri commands with no frontend call site anywhere in
+`src/`** (grep-confirmed, zero matches for each). They are not currently
+reachable through the shipped UI, and per §B every one of them still
+shells out safely (argument arrays, fixed program names) — so they are
+not "dangerous" in the sense of enabling command injection. But most of
+them (per the original report's D.2) don't yet route through
+`security::path_validation`, and a registered-but-UI-unreachable Tauri
+command is still callable by any script that achieves code execution in
+the webview (e.g. a future XSS bug), which is exactly the kind of
+standing attack surface this phase is otherwise about minimizing. Left
+as-is here — wiring 20 commands' path handling is real, scope-expanding
+work, not a verification/fix task, and several of these are clearly
+scaffolding for a not-yet-built PDF-tools panel rather than dead code to
+delete. Flagged explicitly as a remaining concern (§5 of the closing
+summary) rather than silently accepted.
+
+**G. CSP.** `tauri.conf.json`'s `app.security.csp`:
+`default-src 'self'`, `script-src 'self'` (no remote scripts, no
+`unsafe-eval`), `style-src 'self' 'unsafe-inline'` (needed for
+Tailwind's runtime-injected styles — standard, not a remote-origin risk),
+`img-src`/`media-src` scoped to `self`/`data:`/the asset-protocol origin,
+`font-src 'self' data:`, `connect-src 'self' ipc: http://ipc.localhost`,
+`object-src 'none'`, `frame-ancestors 'none'`. No analytics/ad/remote-font
+origins anywhere in it. Checked for anything that would need a CSP
+exception and doesn't have one: no `new Worker(...)` other than the
+PDF.js worker, which is loaded from `/pdf.worker.min.mjs` (same origin,
+covered by the `script-src`/default `worker-src` fallback), and no
+`blob:`/`createObjectURL` usage anywhere in `src/`. `npm run build`
+passing is consistent with the CSP not breaking anything at build time;
+a full interactive click-through of the built app against this CSP
+(watching the webview console for CSP violations while actually
+exercising the PDF editor, video trimmer, and file pickers) was **not**
+performed in this pass — flagged as still-open verification, not
+claimed as done.
+
+**H. Privacy messaging.** `PrivacyBadge.tsx`: "100% Local" badge, tooltip
+text "All file conversions happen on your device. No data is ever sent to
+external servers." — accurate per §A (no network-capable dependency in
+the conversion path). The previously-flagged fabricated "0 bytes
+uploaded" stat is confirmed already removed (not present in the current
+file). `SystemStatusModal.tsx`: every field is sourced from
+`commands::system_status`'s literal, code-derived booleans (read in full
+in this pass) — no field claims something not actually implemented; the
+metadata-removal row explicitly says video/document/PDF don't have a
+stripping step yet rather than implying blanket coverage. No instance of
+"100% secure" or "zero network activity" phrasing found anywhere in the
+UI text.
+
+---
+
+## 5. Fixes made this pass
+
+1. **Two failing `path_validation` tests fixed at the root cause, not
+   weakened.** `fs_scope_target_accepts_existing_file` and
+   `fs_scope_target_accepts_not_yet_created_save_as_target` were
+   comparing `validate_fs_scope_target`'s result (which deliberately
+   strips Windows' `\\?\` canonicalize prefix — see the file's own
+   `normalize_windows_prefix` doc comment) against a *raw*
+   `Path::canonicalize()` call in the test itself, which still has the
+   `\\?\` prefix on Windows. Two different, non-interchangeable string
+   representations of the same real path. Fixed by normalizing the
+   test's expected value the same way the function under test does
+   (`normalize_windows_prefix(...)`), so the assertion verifies genuine
+   path equality instead of an accidental string mismatch. The actual
+   security behavior (prefix stripped once, consistently, before any
+   downstream use) was already correct — only the test's own comparison
+   was wrong. Traversal and scope-escape protections were not touched
+   and remain intact (confirmed: `confirm_within_rejects_path_outside_root`,
+   `fs_scope_target_rejects_parent_that_does_not_exist`, and all
+   `file_validation` traversal tests still pass).
+
+2. **Fixed a real (not cosmetic) bug the two `cargo check` warnings were
+   pointing at.** `fs_scope.rs` gated the video-preview asset-protocol
+   grant behind `#[cfg(feature = "protocol-asset")]` — but
+   `protocol-asset` was never declared as a feature *of this crate*
+   (Cargo features are per-package; the crate only turns that feature on
+   for its `tauri` *dependency*, in `Cargo.toml`). That `cfg` therefore
+   evaluated false unconditionally, silently compiling the
+   `app.asset_protocol_scope().allow_file(path)` call **out of every
+   build**, which meant `authorize_file`'s asset-protocol grant for the
+   video trimmer's `convertFileSrc` preview was dead code that never ran
+   — the "unexpected cfg condition value" and "unused import `Manager`"
+   warnings were both direct symptoms of this. Fixed by calling
+   `app.asset_protocol_scope().allow_file(path)` unconditionally (it's
+   guaranteed present because `Cargo.toml` enables it on the `tauri`
+   dependency regardless of any local feature flag) and propagating its
+   error instead of silently discarding it with `let _ =`. `cargo check`
+   is now clean with zero warnings. **This needs a real-app smoke test of
+   the video trimmer preview** to confirm the fix actually restores the
+   intended behavior — not yet done in this pass (see §9 blockers).
+
+3. **A previously-undiscovered doctest failure fixed.** `cargo test`
+   surfaced (once the two path-validation failures above were fixed) a
+   third failure: `security::temp`'s module doc comment had a 4-space-
+   indented line (`<temp>/localconvert/jobs/<uuid>/`) which rustdoc
+   interprets as an implicit Rust code block and tries to compile —
+   `<temp>` isn't valid Rust syntax, so the doctest failed. Fixed by
+   wrapping it in an explicit ` ```text ` fence so rustdoc treats it as
+   plain documentation, not a compilable sample. This was not in the
+   task's reported "22 passed, 2 failed" — worth flagging since it means
+   the previous local run either didn't include doctests or the report
+   summarizing it did not mention this failure; either way it's fixed
+   and verified now (`cargo test`'s doctest section: `0 passed; 0 failed`
+   — no doctests remain that attempt to compile non-Rust content).
+
+4. **Report/implementation mismatch fixed, not just documented.** The
+   previous report's §F claimed the file-validation tests covered
+   "Windows reserved device names" (`CON`, `PRN`, `COM1`, etc.) — they
+   did not; `sanitize_filename_component` only ever stripped path
+   separators and null bytes. Since this is exactly the kind of
+   Windows-specific edge case item C above asks to verify, and the fix is
+   small and self-contained, added a real
+   case-insensitive check for `CON`/`PRN`/`AUX`/`NUL`/`COM1-9`/`LPT1-9`
+   (matching on the filename's stem, so `con.txt` is caught too, not just
+   bare `con`) that falls back to `"output"`, the same fallback already
+   used for empty/`.`/`..` names. Added
+   `rejects_windows_reserved_device_names` (verifies both the reserved
+   names and that lookalikes like `console.txt`/`COM10` are *not*
+   false-positived on) to `file_validation.rs`'s test suite.
+
+5. **Unused static `fs:scope` grant removed from
+   `capabilities/default.json`.** It granted `$APPDATA/**` and
+   `$APPLOCALDATA/**` to the fs plugin, but grep confirmed the frontend
+   never calls the fs plugin against either directory (no
+   `appDataDir`/`appLocalDataDir`/`BaseDirectory` usage anywhere in
+   `src/`) — the app-data directory is only ever touched from Rust
+   (`std::fs`), which capabilities don't gate at all. Removing it doesn't
+   change what the PDF editor or video trimmer can do (their access is
+   already runtime-granted per-file, unaffected by this) — it just
+   deletes a static grant that covered nothing the frontend actually
+   uses, tightening the capability surface further in the spirit of the
+   original "trimmed to exactly what's used" goal.
+
+6. **`fabric` bumped 7.1.0 → 7.4.0** (npm audit fix, non-breaking, same
+   major, already inside the declared `^7.1.0` range) — fixes a real,
+   direct, production-reachable high-severity XSS vulnerability in
+   Fabric.js's SVG export/gradient serialization. See §3.
+
+No frontend (`src/`) files were changed this pass beyond the lockfile
+bump — the frontend build was already clean and its logic untouched.
+
+---
+
+## 6. Files changed this pass
+
+- `src-tauri/src/security/path_validation.rs` — fixed 2 failing tests
+- `src-tauri/src/security/fs_scope.rs` — fixed dead-code asset-protocol
+  grant, removed unused import, proper error propagation
+- `src-tauri/src/security/temp.rs` — fixed doctest
+- `src-tauri/src/security/file_validation.rs` — added Windows
+  reserved-device-name handling + test
+- `src-tauri/capabilities/default.json` — removed unused static `fs:scope`
+- `package.json` / `package-lock.json` — `fabric` 7.1.0 → 7.4.0
+  (lockfile only; `package.json`'s `^7.1.0` range already covered it)
+- `src-tauri/Cargo.lock`, `src-tauri/gen/schemas/*.json` — regenerated by
+  `cargo check`/`cargo test`/`npm run tauri build` themselves (Tauri's
+  own build tooling keeps its ACL/capability JSON schemas in sync with
+  the registered plugins and capabilities file; smaller now because
+  Phase 1 already removed several plugins — not a manual edit)
+
+---
+
+## 7. Remaining security concerns (accurate as of this pass)
+
+1. **~20 registered commands have no frontend call site and don't route
+   through `security::path_validation`** (§4.F). Not currently
+   reachable through the shipped UI; would matter if a future XSS bug
+   gave a script direct `invoke()` access. Real work to close, not a
+   quick fix.
+2. **Temp-dir isolation covers `convert_file`, `merge_pdfs`, `split_pdf`,
+   `compress_pdf` only** — same ~20 other commands write directly to
+   their final destination without an isolated per-job temp directory.
+3. **Metadata stripping only exists for image conversions** — no
+   video/document/PDF metadata-removal code path exists yet.
+   `system_status`'s copy already states this honestly.
+4. **`vite`/`esbuild` dev-server-only vulnerabilities remain** (§3) —
+   require a `vite` major-version bump to close; not reachable in the
+   shipped app.
+5. **CSP was verified by config review + a passing production build, not
+   by an interactive click-through of the running app watching for
+   console CSP violations** (§4.G) — genuinely open, not done.
+6. **The `fs_scope.rs` dead-code fix (§5.2) has not been smoke-tested in
+   the running app** — `cargo check`/`cargo test` confirm it compiles and
+   the unit-level logic is sound, but confirming the video trimmer
+   preview actually loads now (vs. silently failing before, as the dead
+   code implies it may have been) needs someone to open the app and drag
+   a video into the trimmer.
+7. **No CI** runs any of `cargo check`/`cargo test`/`npm run build` on
+   push — everything in this report was verified by hand, once, in one
+   environment. A regression (e.g. someone reintroducing the dead
+   `#[cfg(feature = "protocol-asset")]` pattern) would not be caught
+   automatically.
+8. **Architectural reorganization** (`commands/`, `converters/`,
+   `models/` subdirectories) was not done — unrelated to security,
+   flagged in the original report as a deliberate scope decision, still
+   true.
+
+---
+
+## 8. Final status
+
+1. **npm build result:** ✅ Success (0 type errors)
+2. **cargo check result:** ✅ Success, **0 warnings** (2 fixed)
+3. **cargo test result:** ✅ **25/25 passed** (was 22/24 passed, 2
+   failed; 1 additional test added for reserved-device-name coverage;
+   1 previously-undiscovered doctest failure also found and fixed)
+4. **Tauri production build result:** ✅ Success — MSI + NSIS both
+   produced; `__TAURI_BUNDLE_TYPE` warning is expected/harmless (§2)
+5. **npm audit:** 9 → 2 vulnerabilities. Fixed: `fabric` (direct,
+   production, high, real XSS risk), `postcss`/`nanoid`/`picomatch`/
+   `rollup`/`@babel/core` (all dev-only, not reachable, fixed anyway as
+   available non-breaking bumps). Not fixed: `vite`/`esbuild`
+   (dev-server-only, requires a major-version bump). See §3 for full
+   classification.
+6. **Files changed:** see §6.
+7. **Security issues fixed:** 2 failing tests (root-caused, not
+   weakened), a dead-code bug that silently disabled the video-preview
+   asset-protocol grant, a broken doctest, a documented-but-missing
+   Windows-reserved-filename check now actually implemented, an unused
+   static fs capability grant removed, and a real production XSS
+   dependency vulnerability patched.
+8. **Remaining security concerns:** see §7 (8 items, none are
+   regressions from this pass — all pre-existing and now accurately
+   documented instead of assumed).
+9. **Is Phase 1 actually ready to close: NO.**
+10. **Exact blockers**, in priority order:
+    - The video-trimmer asset-protocol fix (§5.2) needs a real smoke test
+      in the running app — this pass only confirms it compiles and the
+      unit tests pass, not that the preview actually works now.
+    - CSP needs an interactive click-through against the running app
+      (§4.G / §7.5), not just config review + a passing build.
+    - A decision on the ~20 unreachable-but-registered commands (§7.1) —
+      leave as documented debt, or scope wiring path validation into
+      them — needs to be made explicitly rather than left implicit.
+    None of these are regressions introduced by this pass; they're
+    accurately-scoped follow-up work that a "ready to close" declaration
+    would otherwise paper over.

@@ -2,13 +2,10 @@ import { motion } from "framer-motion";
 import {
   MousePointer2,
   Type,
-  Pencil,
   Square,
   Circle,
   Minus,
   MoveRight,
-  ImageIcon,
-  PenLine,
   Highlighter,
   Undo2,
   Redo2,
@@ -19,7 +16,6 @@ import {
   RotateCcw,
   Save,
   Download,
-  Plus,
   FileText,
   RectangleEllipsis,
 } from "lucide-react";
@@ -36,7 +32,6 @@ interface ToolbarProps {
   onRedo: () => void;
   onDelete: () => void;
   onRotatePage: (degrees: number) => void;
-  onAddBlankPage: () => void;
   onSave: () => void;
   onSaveAs: () => void;
   canUndo: boolean;
@@ -100,7 +95,6 @@ export function Toolbar({
   onRedo,
   onDelete,
   onRotatePage,
-  onAddBlankPage,
   onSave,
   onSaveAs,
   canUndo,
@@ -110,16 +104,17 @@ export function Toolbar({
   isSaving = false,
   editedTextCount = 0,
 }: ToolbarProps) {
+  // "draw" (annotations are silently dropped on save - see pdfSaveService.ts),
+  // "image" and "signature" (no handler wired up at all - clicking does nothing)
+  // are intentionally not offered here. See SECURITY_PHASE1_REPORT.md / PDF
+  // editor audit for details. Re-add once save-path support / handlers exist.
   const tools: { type: ToolType; icon: React.ReactNode; label: string }[] = [
     { type: "select", icon: <MousePointer2 className="w-5 h-5" />, label: "Select" },
     { type: "text", icon: <Type className="w-5 h-5" />, label: "Text" },
-    { type: "draw", icon: <Pencil className="w-5 h-5" />, label: "Draw" },
     { type: "rectangle", icon: <Square className="w-5 h-5" />, label: "Rectangle" },
     { type: "circle", icon: <Circle className="w-5 h-5" />, label: "Circle" },
     { type: "line", icon: <Minus className="w-5 h-5" />, label: "Line" },
     { type: "arrow", icon: <MoveRight className="w-5 h-5" />, label: "Arrow" },
-    { type: "image", icon: <ImageIcon className="w-5 h-5" />, label: "Image" },
-    { type: "signature", icon: <PenLine className="w-5 h-5" />, label: "Signature" },
     { type: "highlight", icon: <Highlighter className="w-5 h-5" />, label: "Highlight" },
     { type: "whiteout", icon: <FileText className="w-5 h-5" />, label: "Whiteout" },
     { type: "whiteoutReplace", icon: <RectangleEllipsis className="w-5 h-5" />, label: "Whiteout & Replace" },
@@ -224,12 +219,6 @@ export function Toolbar({
           onClick={() => onRotatePage(90)}
           isDark={isDark}
         />
-        <ToolButton
-          icon={<Plus className="w-5 h-5" />}
-          label="Add Blank Page"
-          onClick={onAddBlankPage}
-          isDark={isDark}
-        />
 
         <Divider isDark={isDark} />
 
@@ -252,7 +241,7 @@ export function Toolbar({
       </div>
 
       {/* Tool options bar */}
-      {(activeTool === "draw" || activeTool === "text" || activeTool === "rectangle" || 
+      {(activeTool === "text" || activeTool === "rectangle" ||
         activeTool === "circle" || activeTool === "line" || activeTool === "arrow" || activeTool === "whiteoutReplace") && (
         <div className={`flex items-center gap-4 px-4 py-2 border-t ${isDark ? "border-dark-700" : "border-gray-200"}`}>
           {/* Stroke color */}

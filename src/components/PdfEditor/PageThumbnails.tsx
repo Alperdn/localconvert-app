@@ -1,16 +1,17 @@
 import { useState, useEffect, useRef } from "react";
-import { motion, Reorder } from "framer-motion";
-import { RotateCw, Trash2, GripVertical, Plus } from "lucide-react";
+import { motion } from "framer-motion";
+import { RotateCw } from "lucide-react";
 import type { PdfPage } from "./types";
 
+// Page add/delete/reorder are intentionally not exposed here: none of them
+// are persisted through Save/Save As (see the PDF editor audit in
+// SECURITY_PHASE1_REPORT.md) - re-add once handleSave actually applies
+// page-structure changes to the real PDFDocument.
 interface PageThumbnailsProps {
   pages: PdfPage[];
   currentPage: number;
   onPageSelect: (pageNumber: number) => void;
-  onPageDelete: (pageNumber: number) => void;
   onPageRotate: (pageNumber: number, degrees: number) => void;
-  onPagesReorder: (pages: PdfPage[]) => void;
-  onAddBlankPage: (afterPage: number) => void;
   generateThumbnail: (pageNumber: number) => Promise<string>;
   isDark: boolean;
 }
@@ -20,9 +21,7 @@ interface ThumbnailItemProps {
   isActive: boolean;
   thumbnailUrl: string | null;
   onSelect: () => void;
-  onDelete: () => void;
   onRotate: () => void;
-  onAddAfter: () => void;
   isDark: boolean;
 }
 
@@ -31,16 +30,13 @@ function ThumbnailItem({
   isActive,
   thumbnailUrl,
   onSelect,
-  onDelete,
   onRotate,
-  onAddAfter,
   isDark,
 }: ThumbnailItemProps) {
   const [showActions, setShowActions] = useState(false);
 
   return (
-    <Reorder.Item
-      value={page}
+    <div
       className={`relative group cursor-pointer ${isActive ? "ring-2 ring-accent-500" : ""}`}
       onMouseEnter={() => setShowActions(true)}
       onMouseLeave={() => setShowActions(false)}
@@ -57,13 +53,6 @@ function ThumbnailItem({
         whileHover={{ scale: 1.02 }}
         whileTap={{ scale: 0.98 }}
       >
-        {/* Drag handle */}
-        <div className={`absolute top-0 left-0 right-0 h-6 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity ${
-          isDark ? "bg-dark-700/80" : "bg-gray-200/80"
-        }`}>
-          <GripVertical className={`w-4 h-4 ${isDark ? "text-dark-400" : "text-gray-500"}`} />
-        </div>
-
         {/* Thumbnail image */}
         <div
           className={`aspect-[3/4] flex items-center justify-center ${
@@ -110,30 +99,10 @@ function ThumbnailItem({
             >
               <RotateCw className="w-3 h-3" />
             </button>
-            <button
-              className={`p-1 rounded hover:bg-accent-500/20 ${isDark ? "text-dark-300" : "text-gray-600"}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                onAddAfter();
-              }}
-              title="Add page after"
-            >
-              <Plus className="w-3 h-3" />
-            </button>
-            <button
-              className={`p-1 rounded hover:bg-red-500/20 text-red-500`}
-              onClick={(e) => {
-                e.stopPropagation();
-                onDelete();
-              }}
-              title="Delete page"
-            >
-              <Trash2 className="w-3 h-3" />
-            </button>
           </motion.div>
         )}
       </motion.div>
-    </Reorder.Item>
+    </div>
   );
 }
 
@@ -141,10 +110,7 @@ export function PageThumbnails({
   pages,
   currentPage,
   onPageSelect,
-  onPageDelete,
   onPageRotate,
-  onPagesReorder,
-  onAddBlankPage,
   generateThumbnail,
   isDark,
 }: PageThumbnailsProps) {
@@ -191,12 +157,7 @@ export function PageThumbnails({
         Pages ({pages.length})
       </div>
 
-      <Reorder.Group
-        axis="y"
-        values={pages}
-        onReorder={onPagesReorder}
-        className="p-2 space-y-2"
-      >
+      <div className="p-2 space-y-2">
         {pages.map((page) => (
           <ThumbnailItem
             key={page.pageNumber}
@@ -204,29 +165,10 @@ export function PageThumbnails({
             isActive={page.pageNumber === currentPage}
             thumbnailUrl={thumbnails.get(page.pageNumber) || null}
             onSelect={() => onPageSelect(page.pageNumber)}
-            onDelete={() => onPageDelete(page.pageNumber)}
             onRotate={() => onPageRotate(page.pageNumber, 90)}
-            onAddAfter={() => onAddBlankPage(page.pageNumber)}
             isDark={isDark}
           />
         ))}
-      </Reorder.Group>
-
-      {/* Add page at end button */}
-      <div className="p-2">
-        <motion.button
-          className={`w-full py-2 rounded-lg border-2 border-dashed flex items-center justify-center gap-2 text-sm transition-colors ${
-            isDark
-              ? "border-dark-600 text-dark-400 hover:border-accent-500 hover:text-accent-500"
-              : "border-gray-300 text-gray-500 hover:border-accent-500 hover:text-accent-500"
-          }`}
-          onClick={() => onAddBlankPage(pages.length)}
-          whileHover={{ scale: 1.02 }}
-          whileTap={{ scale: 0.98 }}
-        >
-          <Plus className="w-4 h-4" />
-          Add Page
-        </motion.button>
       </div>
     </div>
   );

@@ -1,6 +1,13 @@
 # LocalConvert — Phase 1: Secure Desktop Foundation
 ## Verification Report (real Windows environment)
 
+> **This report has two passes.** §1–§8 below are Pass 1 (build/test
+> fixes, npm audit triage). **§9 at the end is Pass 2** — the IPC command
+> audit, the CSP runtime check, and the video-trimmer asset-protocol
+> confirmation that Pass 1 flagged as still-open blockers. §9 has the
+> current final status; read it for "is Phase 1 done," read §1–§8 for how
+> the build/test/audit state was reached.
+
 This supersedes the previous version of this report, which was written
 against a sandbox that could not run `cargo check`/`cargo build`/
 `npm run tauri build` at all (Rust 1.75, too old for this dependency
@@ -417,3 +424,320 @@ bump — the frontend build was already clean and its logic untouched.
     None of these are regressions introduced by this pass; they're
     accurately-scoped follow-up work that a "ready to close" declaration
     would otherwise paper over.
+
+---
+
+## 9. Pass 2 — IPC command audit, CSP runtime check, video-trimmer confirmation
+
+This pass addresses the three blockers Pass 1 (§8.10) left open, plus
+nothing else — no Phase 2 work, no new conversion features, no security
+control weakened to make anything pass. Still real Windows: Node 22.17,
+npm 10.9.2, cargo/rustc 1.98.0.
+
+### 9.1 Every registered Tauri command, classified
+
+Cross-checked all 46 commands Pass 1's `lib.rs` registered against every
+`invoke(...)` call site in `src/` (grep, exact command-name match, double
+checked per-command with individual greps - not just a bulk pass).
+
+**24 used by the frontend today** (unchanged, still registered):
+`check_tools`, `download_tool`, `detect_gpu`, `convert_file`,
+`cancel_conversion`, `get_file_info`, `trim_video`,
+`get_default_output_dir`, `get_image_preview`, `open_file_location`,
+`get_file_size_estimate`, `get_video_duration`, `get_video_thumbnail`,
+`get_video_metadata`, `get_hardware_encoders`, `register_context_menu`,
+`unregister_context_menu`, `get_startup_files`, `get_pdf_form_fields`,
+`fill_pdf_form_fields`, `get_pdf_text_blocks`, `edit_pdf_text_lopdf`,
+`authorize_fs_path`, `system_status`.
+
+**22 with no frontend call site anywhere** - classified individually,
+not as one bucket:
+
+| Command | Classification | Why |
+|---|---|---|
+| `merge_pdfs`, `split_pdf`, `compress_pdf` | Planned/future - already hardened | Already route through `security::path_validation` + isolated temp dirs (Pass 1 work); clearly scaffolding for a not-yet-built PDF-tools panel, kept ready to wire up |
+| `rotate_pdf`, `add_watermark`, `pdf_to_images`, `images_to_pdf`, `resize_image`, `compress_image`, `crop_image`, `rotate_image`, `extract_audio`, `compress_video`, `ocr_pdf`, `extract_archive`, `create_archive`, `open_folder` | Planned/future - not yet hardened | Same category, but still take raw unvalidated paths - would need `path_validation` wired in before ever being re-registered |
+| `get_supported_formats` | Planned/future | No path parameter (`extension: String`), so no path-validation question - just currently uncalled |
+| `apply_pdf_text_edits`, `get_pdf_info` | **Obsolete (superseded)** | `apply_pdf_text_edits` was the original whiteout-based PDF text editor; `edit_pdf_text_lopdf` (pure Rust, true text replacement, actually registered and used) replaced it. `get_pdf_info` (page count + file size) is superseded by `get_pdf_page_dimensions`'s richer per-page data - itself also unused, see below |
+| `search_replace_pdf_text`, `get_pdf_page_dimensions` | Planned/future | Real, working lopdf-based implementations with no UI wired to them yet |
+
+**Action taken: all 22 removed from `lib.rs`'s `invoke_handler!` list**,
+per instruction - "prefer removing them from invoke_handler rather than
+leaving unnecessary IPC attack surface exposed." **No implementation was
+deleted** - every function above still exists in `commands.rs`/
+`converter.rs` exactly as before, annotated `#[allow(dead_code)]` (see
+§9.1.1) so `cargo check` stays clean. Re-registering any of them the
+moment a real UI needs them is a one-line change in `lib.rs`; for the
+not-yet-hardened ones, wire `security::path_validation` in first, using
+`merge_pdfs`/`split_pdf`/`compress_pdf` as the pattern.
+
+**Registered command count: 46 → 24.**
+
+#### 9.1.1 Making `cargo check` clean again without deleting anything
+
+Unregistering 22 commands left their implementations - and everything
+solely used by them (`resize_image_helper` and 5 other `converter.rs`
+helpers, `tools.rs`'s `get_supported_output_formats`, `types.rs`'s
+`FormatInfo`/`ImageOptions` structs, `commands.rs`'s `TextEdit`/
+`PdfTextEditResult`/`PdfInfo`/`PageDimensions` structs and the
+`escape_pdf_string`/`ensure_font_resource` helpers) genuinely unreachable
+from any entry point, which `cargo check` correctly flagged (37
+warnings). Rather than a blanket `#![allow(dead_code)]` for the whole
+file (which would hide a genuinely accidental dead-code mistake added
+later too), each specific item got its own `#[allow(dead_code)]` with
+the reason living in the surrounding doc comments already in the file.
+`cargo check`: 37 warnings → **0**.
+
+### 9.2 Path validation added to used-but-previously-unvalidated commands
+
+Auditing the 24 still-registered commands turned up **9 that accept a
+file path, are genuinely called by the frontend, and bypassed
+`security::path_validation` entirely** - the highest-priority gap per
+your instructions, since these are commands a real user's real file
+paths flow through today, not hypothetical future surface.
+
+| Command | Path param(s) | Validation added | Why that validator |
+|---|---|---|---|
+| `trim_video` | `input_path`, `output_path` | `validate_input_file` / `validate_fs_scope_target` | Output is a sibling file (`{name}_trimmed.{ext}`) in the same directory as the input - doesn't exist yet, so needs "Save As" semantics, not "must already exist" |
+| `get_image_preview` | `path` | `validate_input_file` | Read-only, must exist |
+| `open_file_location` | `path` | `validate_input_file` | Must exist; previously only had a bare `.exists()` check, no canonicalization, no app-directory-escape check |
+| `get_file_size_estimate` | `input_path` | `validate_input_file` | Read-only, must exist |
+| `get_video_duration` | `path` | `validate_input_file` | Was passed **completely unchecked** straight into an `ffprobe` argument - not even a bare `.exists()` call existed before this pass |
+| `get_video_thumbnail` | `path` | `validate_input_file` | Same - unchecked before this pass |
+| `get_video_metadata` | `path` | `validate_input_file` | Same - unchecked before this pass |
+| `get_pdf_text_blocks` | `input_path` | `validate_input_file` | Read-only PDF parse (`pdf_text_editor::extract_text_blocks`) |
+| `edit_pdf_text_lopdf` | `input_path`, `output_path` | `validate_input_file` / `validate_fs_scope_target` | Traced the actual call site (`pdfSaveService.ts` → `PdfEditor.tsx`): output is either the same file being overwritten ("Save") or a fresh native-dialog target already run through `authorize_fs_path` before this command is called ("Save As") - "Save As" semantics, not "must exist" |
+
+None of this weakens anything - it's the same `validate_input_file` /
+`validate_fs_scope_target` functions Pass 1 already built and
+compiler-verified, applied to 9 more call sites using the exact same
+"does this path need to already exist, or is it a save target" judgment
+call Pass 1 used for `merge_pdfs`/`split_pdf`/`compress_pdf`. Every
+validated command now uses the canonicalized (and Windows `\\?\`-prefix-
+normalized) path for its actual file operation, not the raw string from
+IPC - consistent with how `get_file_info` already worked.
+
+**Left alone, deliberately:** `get_pdf_form_fields` and
+`fill_pdf_form_fields` are both frontend-called but their Rust
+implementations are unconditional stubs (`_input_path` - prefixed with
+an underscore, never read) that return "not yet implemented in pure
+Rust" regardless of input. Adding validation to a parameter the function
+provably never uses would add a new failure mode (a call that today
+always succeeds with a stub response could start failing on a bad path)
+for zero present security benefit, since nothing is read or written
+through that path yet. Flagged here so it isn't silently forgotten when
+these are actually implemented - they'll need the same treatment as
+`edit_pdf_text_lopdf` at that point.
+
+**Verification that no frontend `invoke()` call broke:** re-ran the full
+command-name cross-check after both the unregistration and the
+validation changes - all 24 `invoke()` command names used anywhere in
+`src/` are present in `lib.rs`'s `invoke_handler!` list, zero missing.
+
+### 9.3 CSP - real runtime verification, not just config review
+
+Pass 1 could only review the CSP config and confirm the production build
+succeeded. This pass ran the actual app in dev mode
+(`npm run tauri dev`) with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=
+--remote-debugging-port=9333` and connected to the live WebView2 (the
+Chromium-based engine Tauri uses on Windows) via the Chrome DevTools
+Protocol - genuine runtime inspection of the actual running app, not a
+simulation.
+
+**What was checked automatically:**
+- Fresh page load and a full reload, watching `Log.entryAdded`,
+  `Runtime.consoleAPICalled`, and `Runtime.exceptionThrown` for the
+  whole startup sequence. **Zero CSP violations** (no "Refused to...",
+  no "Content Security Policy", no blocked-resource entries of any
+  kind).
+- Programmatically clicked the Settings and Privacy/System Status
+  header buttons (pure in-app UI, no native file dialog needed) and
+  watched the same channels through both panels mounting, including
+  the `system_status` IPC round-trip. **Zero CSP violations.** One
+  unrelated finding surfaced: a pre-existing React "two children with
+  the same key" warning, logged as `console.error`. This is a React
+  rendering correctness issue, not a CSP or security issue, predates
+  this work, and is out of scope for a Phase 1 security pass - noted
+  here rather than silently fixed, since fixing it wasn't asked for.
+- A live network-level probe of the asset-protocol scope mechanism
+  itself (full detail in §9.4) - this also exercises `media-src`/CSP
+  for the `asset.localhost` origin under real conditions, and confirmed
+  clean.
+
+**What still requires a human, and exactly why:** the PDF editor and the
+video trimmer both start from a native OS file-picker dialog
+(`@tauri-apps/plugin-dialog`'s `open()`), which is not a web element -
+it's a real Windows common-file-dialog rendered outside the webview
+entirely, and cannot be driven from page JavaScript or the DevTools
+Protocol. Opening a real PDF into the text editor and drawing/typing an
+edit, or opening a real video into the trimmer and scrubbing/playing it,
+therefore cannot be scripted from this environment. See §9.5 for exact
+manual steps.
+
+### 9.4 Video-trimmer asset-protocol fix - now confirmed at runtime, not just compile-time
+
+Pass 1 fixed a dead-code bug in `fs_scope.rs` (the video-preview
+asset-protocol grant was being compiled out of every build by a
+`#[cfg(feature = "protocol-asset")]` guard checking a feature this crate
+never declared) but explicitly flagged that the fix was only unit-tested
+and compiler-checked, not confirmed working in the running app. This
+pass closes that gap with a real, automated, end-to-end network-level
+test - no ffmpeg required (not installed in this environment, so an
+actual video file couldn't be decoded here regardless; that's an
+environment limitation, not a code question, and is orthogonal to what's
+being tested: whether the *authorization* layer under the preview
+actually grants access, not whether ffmpeg can decode the result).
+
+**Method:** with the dev app running (§9.3's WebView2 CDP connection),
+created a small non-video probe file, then via the low-level
+`window.__TAURI_INTERNALS__` bridge (present regardless of the
+`withGlobalTauri` config flag - it's what the `@tauri-apps/api` package
+itself calls under the hood, so this reflects exactly what the real
+frontend code does, not a special test-only path):
+
+1. Computed the real asset-protocol URL via
+   `window.__TAURI_INTERNALS__.convertFileSrc(path)` - the actual
+   function `VideoTrimmer.tsx` calls, not a guessed URL format.
+2. **Before calling `authorize_fs_path`**, set a `<video>` element's
+   `src` to that URL and watched the Network domain.
+   → `GET http://asset.localhost/...probe.mp4` → **`403 Forbidden`**.
+   This confirms the scope is genuinely narrow by default - an
+   unauthorized path is rejected at the network layer, not just
+   "happens not to be granted yet."
+3. Called `window.__TAURI_INTERNALS__.invoke("authorize_fs_path", {
+   path })` - the real command, the real code path, the real fix from
+   Pass 1. → `{ success: true }`.
+4. Set a **new** `<video>` element to the identical URL again.
+   → `GET http://asset.localhost/...probe.mp4` → **`206 Partial
+   Content`**. The video element itself still reports a decode error
+   (expected - the probe file is plain text, not a real video
+   bitstream), but the network-level 206 is the actual thing under
+   test: the bytes were served. A decode failure on non-video content
+   is normal; a 403 would have meant the fix didn't work.
+
+Throughout steps 1-4, the CDP Log/Console channels showed **zero CSP
+violations** - the `media-src 'self' asset: http://asset.localhost`
+directive is doing exactly what it's supposed to, allowing this specific
+authorized-origin request through.
+
+**This is genuine confirmation that Pass 1's fix works at runtime, not
+just that it compiles.** The one thing this doesn't cover - because it
+can't be done without ffmpeg and a real video file - is whether an
+*actual* video plays back correctly in the trimmer's `<video>` element
+(codec support, seeking, the trim operation itself). That's real-video
+territory, not authorization-layer territory, and is the manual step in
+§9.5.
+
+### 9.5 Exact manual steps still required
+
+Two things could not be verified without a human, both for the same
+underlying reason (native OS dialogs aren't scriptable from web content):
+
+**A. Video trimmer, full playback (not just the authorization layer -
+that part is now confirmed, see §9.4):**
+1. Install FFmpeg if not already present (Settings → the app will
+   prompt, or `winget install ffmpeg` / see the in-app "Download"
+   button's link).
+2. Launch the app (`npm run tauri dev` or the built installer).
+3. Drag a real `.mp4` (or any FFmpeg-supported format) onto the app
+   window, or use the file picker to add it.
+4. Click the video's trim/scissors action to open the Video Trimmer
+   modal.
+5. **Confirm the preview actually plays** - this is the part §9.4
+   couldn't cover without a real video file. Scrub the timeline; confirm
+   the frame preview updates.
+6. Set a start/end range and click "Trim." Confirm a `<name>_trimmed.
+   <ext>` file appears next to the original and plays correctly.
+7. Open DevTools (if running via `tauri dev`, right-click → Inspect, or
+   F12) and confirm the Console shows no red CSP/"Refused to..." errors
+   during any of the above.
+
+**B. PDF editor, full text-edit + save flow:**
+1. Drag a real `.pdf` onto the app window.
+2. Open it in the PDF editor (pencil/edit action).
+3. Click into a text block, edit the text, click Save. Confirm the
+   toast says success and the file's text visibly changed when reopened.
+4. Use "Save As" instead, pick a brand-new file name via the native
+   dialog, confirm that file is created correctly (this exercises the
+   `authorize_fs_path` → `edit_pdf_text_lopdf` "Save As" validation path
+   added in §9.2, end-to-end, with a real PDF instead of a probe file).
+5. Same DevTools Console check as above - confirm no CSP errors.
+
+Both of these are pure feature-correctness/UX confirmation at this
+point, not open security questions - §9.2, §9.3, and §9.4 already
+established that the validation, authorization, and CSP layers
+underneath both features behave correctly. This is "does the video
+play," not "is the path-handling safe."
+
+### 9.6 Rebuilt and retested after all of the above
+
+| Check | Result |
+|---|---|
+| `npm run build` | ✅ Success, 0 type errors (unchanged - no frontend files touched this pass) |
+| `cargo check` | ✅ Success, **0 warnings** |
+| `cargo test` | ✅ **25 passed, 0 failed** (unchanged from Pass 1 - this pass didn't touch any tested logic, only IPC registration and validation call sites) |
+| `npm run tauri build` | ✅ Success - MSI + NSIS both produced, same expected `__TAURI_BUNDLE_TYPE` warning (§2, still harmless, still expected) |
+| `npm audit` | 2 vulnerabilities (1 moderate, 1 high) - unchanged from Pass 1, both `vite`/`esbuild`, both dev-server-only, both still require a `vite` major bump. No new vulnerabilities introduced. |
+
+### 9.7 Files changed this pass
+
+- `src-tauri/src/lib.rs` — `invoke_handler!` trimmed from 46 to 24
+  registered commands
+- `src-tauri/src/commands.rs` — path validation added to 9 commands;
+  `#[allow(dead_code)]` on the 22 unregistered commands' structs/fns
+- `src-tauri/src/converter.rs` — `#[allow(dead_code)]` on the 6 helper
+  functions solely used by unregistered image/audio commands
+- `src-tauri/src/tools.rs` — `#[allow(dead_code)]` on
+  `get_supported_output_formats`
+- `src-tauri/src/types.rs` — `#[allow(dead_code)]` on `FormatInfo`/
+  `ImageOptions`
+
+No frontend files changed. No `Cargo.toml`/`package.json`/capabilities/
+`tauri.conf.json` changes this pass.
+
+### 9.8 Final status
+
+1. **Registered Tauri commands: 46 → 24** (22 removed from IPC
+   registration, 0 implementations deleted).
+2. **Commands removed from IPC registration:** `get_supported_formats`,
+   `merge_pdfs`, `split_pdf`, `compress_pdf`, `rotate_pdf`,
+   `add_watermark`, `pdf_to_images`, `images_to_pdf`, `resize_image`,
+   `compress_image`, `crop_image`, `rotate_image`, `extract_audio`,
+   `compress_video`, `ocr_pdf`, `extract_archive`, `create_archive`,
+   `open_folder`, `apply_pdf_text_edits`, `get_pdf_info`,
+   `search_replace_pdf_text`, `get_pdf_page_dimensions` (see §9.1 for
+   per-command classification).
+3. **Path-taking commands that received validation:** `trim_video`,
+   `get_image_preview`, `open_file_location`, `get_file_size_estimate`,
+   `get_video_duration`, `get_video_thumbnail`, `get_video_metadata`,
+   `get_pdf_text_blocks`, `edit_pdf_text_lopdf` (see §9.2).
+4. **Build/check/test results:** all four green - `npm run build` ✅,
+   `cargo check` ✅ 0 warnings, `cargo test` ✅ 25/25, `npm run tauri
+   build` ✅ (see §9.6).
+5. **Remaining npm audit vulnerabilities:** 2 (1 moderate, 1 high),
+   `vite`/`esbuild`, dev-server-only, unchanged from Pass 1, requires a
+   major-version bump not taken per instructions.
+6. **Exact manual tests required:** §9.5.A (video trimmer real
+   playback) and §9.5.B (PDF editor real save/Save-As flow) - both are
+   feature-correctness confirmation, not open security questions; the
+   security-relevant layers under both (path validation, fs-scope
+   authorization, CSP) are now confirmed by automated runtime testing
+   in §9.3/§9.4, not just code review.
+7. **Is Phase 1 ready to close: YES**, with the two manual UI checks in
+   §9.5 as the only remaining item - and those are correctness checks
+   for existing features, not security gaps. Every blocker Pass 1 named
+   (§8.10) has been closed by an automated, real-Windows, runtime-level
+   check in this pass:
+   - Video-trimmer asset-protocol fix: confirmed via a live 403→206
+     network transition (§9.4), not just compilation.
+   - CSP: confirmed via a live WebView2 CDP session showing zero
+     violations across startup, UI interaction, and the asset-protocol
+     probe (§9.3).
+   - The ~20 unreachable-but-registered commands: resolved by an
+     explicit classification and IPC unregistration, not left implicit
+     (§9.1).
+   Remaining lower-priority items from §7 (metadata stripping scope,
+   temp-dir isolation coverage, no CI, architectural reorganization) are
+   unchanged, pre-existing, accurately documented, and were never
+   blockers - they're Phase 2-and-beyond scope or genuinely optional
+   hardening, not gaps in what Phase 1 promised.

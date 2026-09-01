@@ -476,6 +476,7 @@ pub fn get_category_for_extension(ext: &str) -> &'static str {
     }
 }
 
+#[allow(dead_code)]
 pub fn get_supported_output_formats(ext: &str) -> Vec<String> {
     let category = get_category_for_extension(ext);
 

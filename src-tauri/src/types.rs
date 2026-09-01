@@ -92,6 +92,7 @@ pub struct ConversionProgress {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct FormatInfo {
     pub extension: String,
     pub name: String,
@@ -110,6 +111,7 @@ pub struct PdfOptions {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct ImageOptions {
     pub width: Option<u32>,
     pub height: Option<u32>,

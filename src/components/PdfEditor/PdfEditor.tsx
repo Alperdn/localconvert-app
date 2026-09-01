@@ -12,7 +12,7 @@ import { PageThumbnails } from "./PageThumbnails";
 import { PdfViewer } from "./PdfViewer";
 import { usePdfDocument } from "./hooks/usePdfDocument";
 import { savePdfWithTextEditsSmart } from "./services/pdfSaveService";
-import type { ToolType, ToolOptions, AnnotationData, PdfPage, TextBlock } from "./types";
+import type { ToolType, ToolOptions, AnnotationData, TextBlock } from "./types";
 import { DEFAULT_TOOL_OPTIONS } from "./types";
 
 interface PdfEditorProps {
@@ -49,8 +49,6 @@ export function PdfEditor({ filePath, fileName, onClose, isDark }: PdfEditorProp
     updateFormField,
     getEditedFormFields,
     rotatePage,
-    deletePage,
-    addBlankPage,
     getEditedCount,
   } = usePdfDocument();
 
@@ -166,11 +164,6 @@ export function PdfEditor({ filePath, fileName, onClose, isDark }: PdfEditorProp
 
   const handleToolOptionsChange = useCallback((options: Partial<ToolOptions>) => {
     setToolOptions((prev) => ({ ...prev, ...options }));
-  }, []);
-
-  const handlePagesReorder = useCallback((_newPages: PdfPage[]) => {
-    // This is a simplified approach - in reality, you'd track the drag operation
-    setHasChanges(true);
   }, []);
 
   const handleUndo = useCallback(() => {
@@ -493,10 +486,6 @@ export function PdfEditor({ filePath, fileName, onClose, isDark }: PdfEditorProp
                 rotatePage(currentPage, degrees);
                 setHasChanges(true);
               }}
-              onAddBlankPage={() => {
-                addBlankPage(currentPage);
-                setHasChanges(true);
-              }}
               onSave={handleSave}
               onSaveAs={handleSaveAs}
               canUndo={canUndo}
@@ -514,20 +503,8 @@ export function PdfEditor({ filePath, fileName, onClose, isDark }: PdfEditorProp
                 pages={pages}
                 currentPage={currentPage}
                 onPageSelect={setCurrentPage}
-                onPageDelete={(pageNumber) => {
-                  deletePage(pageNumber);
-                  if (currentPage > pages.length - 1) {
-                    setCurrentPage(Math.max(1, pages.length - 1));
-                  }
-                  setHasChanges(true);
-                }}
                 onPageRotate={(pageNumber, degrees) => {
                   rotatePage(pageNumber, degrees);
-                  setHasChanges(true);
-                }}
-                onPagesReorder={handlePagesReorder}
-                onAddBlankPage={(afterPage) => {
-                  addBlankPage(afterPage);
                   setHasChanges(true);
                 }}
                 generateThumbnail={generateThumbnail}

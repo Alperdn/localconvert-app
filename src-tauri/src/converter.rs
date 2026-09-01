@@ -1399,6 +1399,7 @@ fn run_command_with_job_id(cmd: &str, args: &[String], job_id: Option<&str>, dur
 
 // Additional conversion helpers
 
+#[allow(dead_code)]
 pub fn resize_image_helper(
     input: &str,
     output: &str,
@@ -1422,6 +1423,7 @@ pub fn resize_image_helper(
     Ok(output.to_string())
 }
 
+#[allow(dead_code)]
 pub fn compress_image_helper(
     input: &str,
     output: &str,
@@ -1439,6 +1441,7 @@ pub fn compress_image_helper(
     Ok(output.to_string())
 }
 
+#[allow(dead_code)]
 pub fn crop_image_helper(
     input: &str,
     output: &str,
@@ -1461,6 +1464,7 @@ pub fn crop_image_helper(
     Ok(output.to_string())
 }
 
+#[allow(dead_code)]
 pub fn rotate_image_helper(
     input: &str,
     output: &str,
@@ -1503,6 +1507,7 @@ pub fn trim_video_helper(
     Ok(output.to_string())
 }
 
+#[allow(dead_code)]
 pub fn extract_audio_helper(
     input: &str,
     output: &str,
@@ -1531,6 +1536,7 @@ pub fn extract_audio_helper(
     Ok(output.to_string())
 }
 
+#[allow(dead_code)]
 pub fn compress_video_helper(
     input: &str,
     output: &str,

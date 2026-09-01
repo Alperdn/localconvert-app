@@ -69,6 +69,26 @@ pub fn run() {
             
             Ok(())
         })
+        // Phase 1 - Secure Desktop Foundation:
+        //
+        // Only commands the frontend actually calls are registered here
+        // (grep-verified against every `invoke(...)` call site in `src/`).
+        // Registering a command that nothing calls is unnecessary IPC
+        // attack surface - any future XSS bug in the webview would be
+        // able to call it directly, regardless of whether any UI exposes
+        // it. The commands below that are NOT registered still exist as
+        // ordinary functions in `commands.rs` (nothing was deleted) -
+        // they're either superseded by the pure-Rust lopdf-based PDF text
+        // editing that IS registered (`apply_pdf_text_edits`,
+        // `get_pdf_info` before `get_pdf_text_blocks`/
+        // `edit_pdf_text_lopdf` existed), or scaffolding for a
+        // conversion-tools panel (PDF merge/split/compress/rotate/
+        // watermark, image resize/compress/crop/rotate, audio/video
+        // trim-adjacent operations, archive extract/create) that hasn't
+        // been wired into any UI yet. Re-register any of them the moment
+        // a real UI calls them - and wire `security::path_validation`
+        // into it first (see the commands that already do, e.g.
+        // `merge_pdfs`, `split_pdf`, `compress_pdf`, for the pattern).
         .invoke_handler(tauri::generate_handler![
             commands::check_tools,
             commands::download_tool,
@@ -76,28 +96,10 @@ pub fn run() {
             commands::convert_file,
             commands::cancel_conversion,
             commands::get_file_info,
-            commands::get_supported_formats,
-            commands::merge_pdfs,
-            commands::split_pdf,
-            commands::compress_pdf,
-            commands::rotate_pdf,
-            commands::add_watermark,
-            commands::pdf_to_images,
-            commands::images_to_pdf,
-            commands::resize_image,
-            commands::compress_image,
-            commands::crop_image,
-            commands::rotate_image,
             commands::trim_video,
-            commands::extract_audio,
-            commands::compress_video,
-            commands::ocr_pdf,
             commands::get_default_output_dir,
             commands::get_image_preview,
-            commands::extract_archive,
-            commands::create_archive,
             commands::open_file_location,
-            commands::open_folder,
             commands::get_file_size_estimate,
             commands::get_video_duration,
             commands::get_video_thumbnail,
@@ -106,15 +108,11 @@ pub fn run() {
             commands::register_context_menu,
             commands::unregister_context_menu,
             commands::get_startup_files,
-            commands::apply_pdf_text_edits,
-            commands::get_pdf_info,
             commands::get_pdf_form_fields,
             commands::fill_pdf_form_fields,
             // Pure Rust PDF text editing (lopdf - MIT licensed)
             commands::get_pdf_text_blocks,
             commands::edit_pdf_text_lopdf,
-            commands::search_replace_pdf_text,
-            commands::get_pdf_page_dimensions,
             // Phase 1 - Secure Desktop Foundation
             commands::authorize_fs_path,
             commands::system_status,

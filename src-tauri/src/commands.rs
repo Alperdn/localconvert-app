@@ -130,6 +130,7 @@ pub async fn get_file_info(app: tauri::AppHandle, path: String) -> Result<FileIn
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn get_supported_formats(extension: String) -> Vec<FormatInfo> {
     let outputs = get_supported_output_formats(&extension);
     let category = get_category_for_extension(&extension);
@@ -154,6 +155,7 @@ pub async fn get_supported_formats(extension: String) -> Vec<FormatInfo> {
 /// merge never leaves a broken file at the destination, and the temp
 /// directory is cleaned up either way when the job finishes.
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn merge_pdfs(input_paths: Vec<String>, output_path: String) -> Result<String, String> {
     if input_paths.is_empty() {
         return Err("No input files provided".to_string());
@@ -206,6 +208,7 @@ pub async fn merge_pdfs(input_paths: Vec<String>, output_path: String) -> Result
 /// the whole job). The temp directory - including any pages that failed
 /// partway through rendering - is cleaned up when the job finishes.
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn split_pdf(
     input_path: String,
     output_dir: String,
@@ -260,6 +263,7 @@ pub async fn split_pdf(
 /// pattern as `merge_pdfs`: a failed compression never leaves a partial
 /// file at the destination.
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn compress_pdf(
     input_path: String,
     output_path: String,
@@ -308,6 +312,7 @@ pub async fn compress_pdf(
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn rotate_pdf(
     input_path: String,
     output_path: String,
@@ -348,6 +353,7 @@ pub async fn rotate_pdf(
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn add_watermark(
     input_path: String,
     output_path: String,
@@ -384,6 +390,7 @@ pub async fn add_watermark(
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn pdf_to_images(
     input_path: String,
     output_dir: String,
@@ -447,6 +454,7 @@ pub async fn pdf_to_images(
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn images_to_pdf(
     input_paths: Vec<String>,
     output_path: String,
@@ -468,6 +476,7 @@ pub async fn images_to_pdf(
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn resize_image(
     input_path: String,
     output_path: String,
@@ -490,6 +499,7 @@ pub async fn resize_image(
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn compress_image(
     input_path: String,
     output_path: String,
@@ -499,6 +509,7 @@ pub async fn compress_image(
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn crop_image(
     input_path: String,
     output_path: String,
@@ -522,6 +533,7 @@ pub async fn crop_image(
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn rotate_image(
     input_path: String,
     output_path: String,
@@ -537,6 +549,11 @@ pub async fn trim_video(
     start_time: Option<String>,
     end_time: Option<String>,
 ) -> Result<String, String> {
+    let input_canonical = security::path_validation::validate_input_file(&input_path)?;
+    let output_canonical = security::path_validation::validate_fs_scope_target(&output_path)?;
+    let input_path = input_canonical.to_string_lossy().to_string();
+    let output_path = output_canonical.to_string_lossy().to_string();
+
     let options = VideoOptions {
         start_time,
         end_time,
@@ -562,6 +579,7 @@ pub async fn trim_video(
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn extract_audio(
     input_path: String,
     output_path: String,
@@ -571,6 +589,7 @@ pub async fn extract_audio(
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn compress_video(
     input_path: String,
     output_path: String,
@@ -602,6 +621,7 @@ pub async fn compress_video(
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn ocr_pdf(
     input_path: String,
     output_path: String,
@@ -705,12 +725,11 @@ pub async fn get_default_output_dir() -> String {
 #[tauri::command]
 pub async fn get_image_preview(path: String, max_size: Option<u32>) -> Result<String, String> {
     use std::io::Read;
-    
-    let file_path = Path::new(&path);
-    if !file_path.exists() {
-        return Err("File does not exist".to_string());
-    }
-    
+
+    let canonical = security::path_validation::validate_input_file(&path)?;
+    let file_path = canonical.as_path();
+    let path = file_path.to_string_lossy().to_string();
+
     let extension = file_path
         .extension()
         .and_then(|e| e.to_str())
@@ -804,6 +823,7 @@ fn base64_encode(data: &[u8]) -> String {
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn extract_archive(
     input_path: String,
     output_dir: String,
@@ -840,6 +860,7 @@ pub async fn extract_archive(
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn create_archive(
     input_paths: Vec<String>,
     output_path: String,
@@ -887,12 +908,10 @@ pub async fn create_archive(
 
 #[tauri::command]
 pub async fn open_file_location(path: String) -> Result<(), String> {
-    let file_path = Path::new(&path);
-    
-    if !file_path.exists() {
-        return Err("File does not exist".to_string());
-    }
-    
+    let canonical = security::path_validation::validate_input_file(&path)?;
+    let file_path = canonical.as_path();
+    let path = file_path.to_string_lossy().to_string();
+
     #[cfg(target_os = "windows")]
     {
         // On Windows, use explorer /select to highlight the file
@@ -923,6 +942,7 @@ pub async fn open_file_location(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn open_folder(path: String) -> Result<(), String> {
     let folder_path = Path::new(&path);
     
@@ -940,15 +960,13 @@ pub async fn get_file_size_estimate(
     output_format: String,
     quality: Option<u32>,
 ) -> Result<u64, String> {
-    let file_path = Path::new(&input_path);
-    if !file_path.exists() {
-        return Err("File does not exist".to_string());
-    }
-    
-    let input_size = fs::metadata(&input_path)
+    let canonical = security::path_validation::validate_input_file(&input_path)?;
+    let file_path = canonical.as_path();
+
+    let input_size = fs::metadata(file_path)
         .map_err(|e| e.to_string())?
         .len();
-    
+
     let extension = file_path
         .extension()
         .and_then(|e| e.to_str())
@@ -993,6 +1011,9 @@ pub async fn get_file_size_estimate(
 
 #[tauri::command]
 pub async fn get_video_duration(path: String) -> Result<f64, String> {
+    let canonical = security::path_validation::validate_input_file(&path)?;
+    let path = canonical.to_string_lossy().to_string();
+
     let ffmpeg_path = get_tool_path("ffmpeg");
     let ffprobe_path = if cfg!(windows) {
         ffmpeg_path.replace("ffmpeg.exe", "ffprobe.exe")
@@ -1034,10 +1055,13 @@ pub async fn get_video_thumbnail(
     width: Option<u32>,
 ) -> Result<String, String> {
     use std::io::Read;
-    
+
+    let canonical = security::path_validation::validate_input_file(&path)?;
+    let path = canonical.to_string_lossy().to_string();
+
     let time = time_secs.unwrap_or(1.0);
     let w = width.unwrap_or(320);
-    
+
     let temp_path = std::env::temp_dir().join(format!("thumb_{}.jpg", uuid::Uuid::new_v4()));
     
     let output = hidden_command(&get_tool_path("ffmpeg"))
@@ -1069,6 +1093,9 @@ pub async fn get_video_thumbnail(
 
 #[tauri::command]
 pub async fn get_video_metadata(path: String) -> Result<crate::types::VideoMetadata, String> {
+    let canonical = security::path_validation::validate_input_file(&path)?;
+    let path = canonical.to_string_lossy().to_string();
+
     let ffmpeg_path = get_tool_path("ffmpeg");
     let ffprobe_path = if cfg!(windows) {
         ffmpeg_path.replace("ffmpeg.exe", "ffprobe.exe")
@@ -1302,6 +1329,7 @@ pub async fn system_status() -> PrivacyStatus {
 
 // PDF Text Editing Types
 #[derive(serde::Deserialize)]
+#[allow(dead_code)]
 pub struct TextEdit {
     pub page: usize,        // 1-indexed page number
     pub x: f64,             // X position in PDF coordinates
@@ -1315,6 +1343,7 @@ pub struct TextEdit {
 }
 
 #[derive(serde::Serialize)]
+#[allow(dead_code)]
 pub struct PdfTextEditResult {
     pub success: bool,
     pub message: String,
@@ -1324,6 +1353,7 @@ pub struct PdfTextEditResult {
 /// Apply text edits to a PDF using whiteout + replacement approach
 /// This is more reliable than trying to modify content streams directly
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn apply_pdf_text_edits(
     input_path: String,
     output_path: String,
@@ -1447,6 +1477,7 @@ pub async fn apply_pdf_text_edits(
 }
 
 /// Escape special characters for PDF string
+#[allow(dead_code)]
 fn escape_pdf_string(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('(', "\\(")
@@ -1458,6 +1489,7 @@ fn escape_pdf_string(s: &str) -> String {
 
 /// Ensure the page has a font resource F1 (Helvetica)
 /// This is a simplified version that creates a new Resources dict with the font
+#[allow(dead_code)]
 fn ensure_font_resource(doc: &mut lopdf::Document, page_id: lopdf::ObjectId) {
     use lopdf::Object;
     
@@ -1506,6 +1538,7 @@ fn ensure_font_resource(doc: &mut lopdf::Document, page_id: lopdf::ObjectId) {
 
 /// Get basic info about a PDF file
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn get_pdf_info(path: String) -> Result<PdfInfo, String> {
     use lopdf::Document;
     
@@ -1526,6 +1559,7 @@ pub async fn get_pdf_info(path: String) -> Result<PdfInfo, String> {
 }
 
 #[derive(serde::Serialize)]
+#[allow(dead_code)]
 pub struct PdfInfo {
     pub page_count: usize,
     pub file_size: u64,
@@ -1656,8 +1690,11 @@ pub struct LopdfEditResult {
 /// and extracts the text along with position and font information.
 #[tauri::command]
 pub async fn get_pdf_text_blocks(input_path: String) -> Result<PdfTextBlocksResult, String> {
+    let canonical = security::path_validation::validate_input_file(&input_path)?;
+    let input_path = canonical.to_string_lossy().to_string();
+
     eprintln!("[lopdf] Extracting text blocks from: {}", input_path);
-    
+
     let result = pdf_text_editor::extract_text_blocks(&input_path);
     
     // Convert internal TextBlock to PdfTextBlock for serialization
@@ -1701,6 +1738,17 @@ pub async fn edit_pdf_text_lopdf(
     output_path: String,
     edits: Vec<LopdfTextEdit>,
 ) -> Result<LopdfEditResult, String> {
+    let input_canonical = security::path_validation::validate_input_file(&input_path)?;
+    // Not `validate_input_file`: this is a save target (either the same
+    // file being overwritten via "Save", or a brand-new "Save As" path
+    // the frontend already authorized via `authorize_fs_path` before
+    // calling here - see `PdfEditor.tsx`'s `handleSaveAs`). It may not
+    // exist yet, so it needs `validate_fs_scope_target`'s semantics, not
+    // `validate_input_file`'s "must already exist" requirement.
+    let output_canonical = security::path_validation::validate_fs_scope_target(&output_path)?;
+    let input_path = input_canonical.to_string_lossy().to_string();
+    let output_path = output_canonical.to_string_lossy().to_string();
+
     eprintln!("[lopdf] Editing PDF text: {} edits", edits.len());
     eprintln!("[lopdf] Input: {}", input_path);
     eprintln!("[lopdf] Output: {}", output_path);
@@ -1738,6 +1786,7 @@ pub async fn edit_pdf_text_lopdf(
 /// 2. Finds blocks containing the search text
 /// 3. Replaces the text in those blocks
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn search_replace_pdf_text(
     input_path: String,
     output_path: String,
@@ -1826,6 +1875,7 @@ pub async fn search_replace_pdf_text(
 
 /// Get page dimensions for a PDF
 #[tauri::command]
+#[allow(dead_code)]
 pub async fn get_pdf_page_dimensions(input_path: String) -> Result<Vec<PageDimensions>, String> {
     use lopdf::Document;
     
@@ -1886,6 +1936,7 @@ pub async fn get_pdf_page_dimensions(input_path: String) -> Result<Vec<PageDimen
 
 /// Page dimensions result
 #[derive(serde::Serialize)]
+#[allow(dead_code)]
 pub struct PageDimensions {
     pub page_num: u32,
     pub width: f64,

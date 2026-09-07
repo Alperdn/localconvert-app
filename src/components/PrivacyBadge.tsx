@@ -2,6 +2,7 @@ import { motion } from "framer-motion";
 import { Shield, WifiOff } from "lucide-react";
 import { useState } from "react";
 import { useStore } from "../store/useStore";
+import { t } from "../locales";
 
 export function PrivacyBadge() {
   const { settings } = useStore();
@@ -23,7 +24,7 @@ export function PrivacyBadge() {
         whileHover={{ scale: 1.05 }}
       >
         <Shield className="w-3 h-3" />
-        <span>100% Local</span>
+        <span>{t("privacy.localBadge")}</span>
         <WifiOff className="w-3 h-3 opacity-60" />
       </motion.div>
 
@@ -42,10 +43,10 @@ export function PrivacyBadge() {
             <Shield className="w-5 h-5 text-green-500 flex-shrink-0 mt-0.5" />
             <div>
               <h4 className={`font-semibold text-sm ${isDark ? "text-white" : "text-gray-900"}`}>
-                Privacy First
+                {t("privacy.title")}
               </h4>
               <p className="text-xs leading-relaxed">
-                All file conversions happen on your device. No data is ever sent to external servers.
+                {t("privacy.description")}
               </p>
             </div>
           </div>
@@ -54,11 +55,11 @@ export function PrivacyBadge() {
             <div className="flex items-center gap-2 text-xs">
               <div className="flex items-center gap-1 text-green-500">
                 <WifiOff className="w-3 h-3" />
-                <span>Network: Off</span>
+                <span>{t("privacy.networkOff")}</span>
               </div>
             </div>
             <p className={`text-[11px] mt-1.5 ${isDark ? "text-dark-500" : "text-gray-400"}`}>
-              See the shield icon in the header for the full status.
+              {t("privacy.statusHint")}
             </p>
           </div>
 

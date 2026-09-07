@@ -396,46 +396,6 @@ fn get_tool_version_at_path(path: Option<&str>, tool_name: &str) -> Option<Strin
     combined.lines().next().map(|s| s.trim().to_string())
 }
 
-pub fn get_tool_download_url(tool_name: &str) -> Option<&'static str> {
-    if cfg!(target_os = "macos") {
-        match tool_name {
-            "ffmpeg" => Some("https://evermeet.cx/ffmpeg/"),
-            "magick" => Some("https://imagemagick.org/script/download.php#macosx"),
-            "pandoc" => Some("https://github.com/jgm/pandoc/releases"),
-            "7z" => Some("https://www.7-zip.org/download.html"),
-            "tesseract" => Some("https://github.com/tesseract-ocr/tesseract"),
-            "gs" => Some("https://ghostscript.com/releases/gsdnld.html"),
-            "soffice" => Some("https://www.libreoffice.org/download/download/"),
-            "pymupdf" => Some("https://pymupdf.readthedocs.io/en/latest/installation.html"),
-            _ => None,
-        }
-    } else if cfg!(target_os = "linux") {
-        match tool_name {
-            "ffmpeg" => Some("https://ffmpeg.org/download.html#build-linux"),
-            "magick" => Some("https://imagemagick.org/script/download.php#linux"),
-            "pandoc" => Some("https://github.com/jgm/pandoc/releases"),
-            "7z" => Some("https://www.7-zip.org/download.html"),
-            "tesseract" => Some("https://github.com/tesseract-ocr/tesseract"),
-            "gs" => Some("https://ghostscript.com/releases/gsdnld.html"),
-            "soffice" => Some("https://www.libreoffice.org/download/download/"),
-            "pymupdf" => Some("https://pymupdf.readthedocs.io/en/latest/installation.html"),
-            _ => None,
-        }
-    } else {
-        // Windows
-        match tool_name {
-            "ffmpeg" => Some("https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"),
-            "magick" => Some("https://imagemagick.org/archive/binaries/ImageMagick-7.1.1-29-Q16-HDRI-x64-dll.exe"),
-            "pandoc" => Some("https://github.com/jgm/pandoc/releases/download/3.1.12/pandoc-3.1.12-windows-x86_64.zip"),
-            "7z" => Some("https://www.7-zip.org/a/7z2301-x64.exe"),
-            "tesseract" => Some("https://github.com/UB-Mannheim/tesseract/releases"),
-            "gs" => Some("https://github.com/ArtifexSoftware/ghostpdl-downloads/releases/download/gs10021/gs10021w64.exe"),
-            "soffice" => Some("https://www.libreoffice.org/download/download/"),
-            "pymupdf" => Some("https://pymupdf.readthedocs.io/en/latest/installation.html"),
-            _ => None,
-        }
-    }
-}
 
 pub fn get_category_for_extension(ext: &str) -> &'static str {
     let ext_lower = ext.to_lowercase();

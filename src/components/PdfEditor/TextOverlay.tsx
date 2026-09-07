@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { Check, AlertTriangle } from "lucide-react";
 import type { TextBlock } from "./types";
+import { t } from "../../locales";
 
 interface TextBlockOverlayProps {
   block: TextBlock;
@@ -178,7 +179,7 @@ function TextBlockOverlay({ block, zoom, onEdit, onRevert, isDark }: TextBlockOv
             padding: "1px 2px",
             backgroundColor: block.isEdited ? '#ffffff' : (isHovered ? undefined : 'transparent'),
           }}
-          title={isHovered ? "Click to edit text" : undefined}
+          title={isHovered ? t("pdfEditor.clickToEditText") : undefined}
         >
           {/* Show edited text visibly, or invisible placeholder for unedited blocks */}
           <span
@@ -217,9 +218,9 @@ function TextBlockOverlay({ block, zoom, onEdit, onRevert, isDark }: TextBlockOv
               <button
                 onClick={handleRevert}
                 className="px-1.5 py-0.5 text-[10px] rounded bg-red-500/80 text-white hover:bg-red-600 transition-colors"
-                title="Revert to original"
+                title={t("pdfEditor.revertToOriginal")}
               >
-                Revert
+                {t("pdfEditor.revertToOriginal")}
               </button>
             </div>
           )}

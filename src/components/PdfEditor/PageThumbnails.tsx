@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { RotateCw } from "lucide-react";
 import type { PdfPage } from "./types";
+import { t } from "../../locales";
 
 // Page add/delete/reorder are intentionally not exposed here: none of them
 // are persisted through Save/Save As (see the PDF editor audit in
@@ -68,7 +69,7 @@ function ThumbnailItem({
             />
           ) : (
             <div className={`text-sm ${isDark ? "text-dark-400" : "text-gray-500"}`}>
-              Loading...
+              {t("pdfEditor.loadingPdf")}
             </div>
           )}
         </div>
@@ -95,7 +96,7 @@ function ThumbnailItem({
                 e.stopPropagation();
                 onRotate();
               }}
-              title="Rotate"
+              title={t("pdfEditor.rotate")}
             >
               <RotateCw className="w-3 h-3" />
             </button>
@@ -154,7 +155,7 @@ export function PageThumbnails({
       <div className={`sticky top-0 p-3 border-b font-medium text-sm ${
         isDark ? "bg-dark-900 border-dark-700 text-white" : "bg-gray-50 border-gray-200 text-gray-900"
       }`}>
-        Pages ({pages.length})
+        {t("pdfEditor.page")} ({pages.length})
       </div>
 
       <div className="p-2 space-y-2">

@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Check, ChevronDown } from "lucide-react";
 import type { FormField } from "./types";
+import { t } from "../../locales";
 
 interface FormFieldsOverlayProps {
   formFields: FormField[];
@@ -230,7 +231,7 @@ function FormFieldInput({ field, scale, onFieldChange, isDark }: FormFieldInputP
             ${isDark ? "border-dark-600" : "border-gray-300"}
           `}
         >
-          {field.type === "signature" ? "Signature" : field.name}
+          {field.type === "signature" ? t("pdfEditor.signature") : field.name}
         </div>
       );
 

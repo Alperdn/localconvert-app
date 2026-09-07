@@ -3,6 +3,7 @@ import { Settings, ShieldCheck, Wrench, Zap, Minus, Square, X } from "lucide-rea
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useStore } from "../store/useStore";
 import { PrivacyBadge } from "./PrivacyBadge";
+import { t } from "../locales";
 
 interface HeaderProps {
   onSettingsClick: () => void;
@@ -53,7 +54,7 @@ export function Header({ onSettingsClick, onPrivacyClick, onToolsClick, onHelpCl
             whileHover={{ scale: 1.05, y: -1 }}
             whileTap={{ scale: 0.95 }}
             onClick={onToolsClick}
-            title="Conversion Tools"
+            title={t("header.conversionTools")}
           >
             <Wrench className="w-4 h-4" />
           </motion.button>
@@ -64,7 +65,7 @@ export function Header({ onSettingsClick, onPrivacyClick, onToolsClick, onHelpCl
             whileHover={{ scale: 1.05, y: -1 }}
             whileTap={{ scale: 0.95 }}
             onClick={onPrivacyClick}
-            title="Privacy & System Status"
+            title={t("header.privacyAndStatus")}
           >
             <ShieldCheck className="w-4 h-4" />
           </motion.button>
@@ -75,7 +76,7 @@ export function Header({ onSettingsClick, onPrivacyClick, onToolsClick, onHelpCl
             whileHover={{ scale: 1.05, y: -1 }}
             whileTap={{ scale: 0.95 }}
             onClick={onSettingsClick}
-            title="Settings"
+            title={t("header.settings")}
           >
             <Settings className="w-4 h-4" />
           </motion.button>
@@ -89,9 +90,9 @@ export function Header({ onSettingsClick, onPrivacyClick, onToolsClick, onHelpCl
           <button
             className="px-4 py-1.5 mx-2 text-xs font-medium text-warning-500 hover:text-warning-400 bg-warning-500/10 hover:bg-warning-500/20 rounded-lg transition-colors flex items-center gap-1"
             onClick={onHelpClick}
-            title="Help"
+            title={t("header.help")}
           >
-            Help
+            {t("header.help")}
           </button>
         </motion.div>
 
@@ -105,7 +106,7 @@ export function Header({ onSettingsClick, onPrivacyClick, onToolsClick, onHelpCl
               isDark ? "hover:bg-dark-700/50 text-dark-400 hover:text-white" : "hover:bg-dark-100/50 text-dark-500 hover:text-dark-900"
             }`}
             onClick={handleMinimize}
-            title="Minimize"
+            title={t("header.minimize")}
           >
             <Minus className="w-4 h-4" />
           </button>
@@ -114,7 +115,7 @@ export function Header({ onSettingsClick, onPrivacyClick, onToolsClick, onHelpCl
               isDark ? "hover:bg-dark-700/50 text-dark-400 hover:text-white" : "hover:bg-dark-100/50 text-dark-500 hover:text-dark-900"
             }`}
             onClick={handleMaximize}
-            title="Maximize"
+            title={t("header.maximize")}
           >
             <Square className="w-3 h-3" />
           </button>
@@ -123,7 +124,7 @@ export function Header({ onSettingsClick, onPrivacyClick, onToolsClick, onHelpCl
               isDark ? "text-dark-400" : "text-dark-500"
             }`}
             onClick={handleClose}
-            title="Close"
+            title={t("header.close")}
           >
             <X className="w-4 h-4" />
           </button>

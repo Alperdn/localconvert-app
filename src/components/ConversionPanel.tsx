@@ -21,8 +21,10 @@ import {
 import { open } from "@tauri-apps/plugin-dialog";
 import toast from "react-hot-toast";
 import { useStore, ConversionPreset, GpuInfo } from "../store/useStore";
+import { t, translateCapabilityState, describeUnavailableCapability } from "../locales";
 import { getOutputFormats } from "../types/formats";
 import { PresetsSelector } from "./PresetsSelector";
+import { capabilityIdForFile, capabilityIdForOutputFormat, isCapabilityUsable } from "../utils/capabilityGating";
 
 export function ConversionPanel() {
   const {
@@ -34,6 +36,7 @@ export function ConversionPanel() {
     updateSettings,
     globalOutputFormat,
     setGlobalOutputFormat,
+    getCapability,
   } = useStore();
 
   const isDark = settings.theme === "dark";
@@ -66,6 +69,14 @@ export function ConversionPanel() {
 
   const isVideoContext = filesToConvert.some((f) => f.category === "video");
 
+  // Honesty check (Step 3, section H): the native image pipeline's WebP
+  // encoder is lossless-only (no libwebp in the dependency tree - see
+  // src-tauri/src/native/image/encode.rs), so the quality slider has no
+  // effect for a WebP target and must not be presented as if it does.
+  const isWebpImageTarget = filesToConvert.some(
+    (f) => f.category === "image" && (f.outputFormat || globalOutputFormat) === "webp"
+  );
+
   const convertingFiles = files.filter((f) => f.status === "converting");
   const completedFiles = files.filter((f) => f.status === "completed");
   const errorFiles = files.filter((f) => f.status === "error");
@@ -92,9 +103,19 @@ export function ConversionPanel() {
     }
   }
 
+  // Feature Availability Behavior (Step 3, section D/E/F): a file whose
+  // conversion depends on a not-yet-bundled engine (Office, FFmpeg, ...)
+  // must be gated BEFORE the backend ever spawns a process, not discovered
+  // via a failed conversion. `blockedCapability` is the first
+  // non-AVAILABLE capability found among the queued files, if any.
+  const blockedCapability = filesToConvert
+    .map((f) => getCapability(capabilityIdForFile(f) ?? ""))
+    .find((cap) => !isCapabilityUsable(cap));
+
   const canConvert =
     filesToConvert.length > 0 &&
-    filesToConvert.every((f) => f.outputFormat || globalOutputFormat);
+    filesToConvert.every((f) => f.outputFormat || globalOutputFormat) &&
+    !blockedCapability;
 
   const handleSelectOutputDir = async () => {
     try {
@@ -111,8 +132,16 @@ export function ConversionPanel() {
   };
 
   const handleConvert = async () => {
+    // Defense in depth: the Convert button is already disabled while
+    // `blockedCapability` is set, but never rely solely on a disabled
+    // button - re-check here so nothing can reach `convertFiles` (and a
+    // real process spawn) for a file whose engine isn't available.
+    if (blockedCapability) {
+      toast.error(describeUnavailableCapability(blockedCapability));
+      return;
+    }
     if (!canConvert) {
-      toast.error("Please select an output format for all files");
+      toast.error(t("workflow.selectOutputFormatForAll"));
       return;
     }
 
@@ -138,9 +167,9 @@ export function ConversionPanel() {
         subtitleAction: settings.subtitleAction.startsWith("Burn-in-") ? "Burn Into Video" : settings.subtitleAction,
         subtitleStreamIndex: settings.subtitleAction.startsWith("Burn-in-") ? parseInt(settings.subtitleAction.split("-").pop() || "0") : null,
       });
-      toast.success("Conversion completed!");
+      toast.success(t("workflow.conversionCompleted"));
     } catch (error) {
-      toast.error("Some conversions failed");
+      toast.error(t("workflow.someConversionsFailed"));
     }
   };
 
@@ -152,7 +181,7 @@ export function ConversionPanel() {
           <div className="w-8 h-8 rounded-lg bg-accent-gradient flex items-center justify-center shadow-glow">
             <Zap className="w-4 h-4 text-white" />
           </div>
-          Conversion <span className="text-brand font-light">Controls</span>
+          {t("workflow.convert")} <span className="text-brand font-light">Panel</span>
         </h3>
       </div>
 
@@ -162,26 +191,26 @@ export function ConversionPanel() {
         <div className="grid grid-cols-4 gap-3">
           <div className={`rounded-xl p-3 flex flex-col items-center justify-center transition-all duration-300 hover:-translate-y-0.5 hover:shadow-lg ${isDark ? "bg-gradient-to-br from-dark-800/80 to-dark-900/40 ring-1 ring-white/5 shadow-[0_4px_20px_rgba(0,0,0,0.2)]" : "bg-white/60 border border-dark-100 shadow-sm"}`}>
             <p className={`text-2xl font-black tracking-tight ${isDark ? "text-white drop-shadow-md" : "text-dark-900"}`}>{filesToConvert.length}</p>
-            <p className={`text-[9px] font-black uppercase tracking-[0.15em] mt-0.5 ${isDark ? "text-dark-400" : "text-dark-500"}`}>Queued</p>
+            <p className={`text-[9px] font-black uppercase tracking-[0.15em] mt-0.5 ${isDark ? "text-dark-400" : "text-dark-500"}`}>{t("conversion.queued")}</p>
           </div>
           <div className={`rounded-xl p-3 flex flex-col items-center justify-center transition-all duration-300 hover:-translate-y-0.5 hover:shadow-lg ${isDark ? "bg-gradient-to-br from-brand/10 to-brand/5 ring-1 ring-brand/20 shadow-[0_4px_20px_rgba(var(--brand-color-rgb),0.15)]" : "bg-brand/5 border border-brand/20 shadow-sm"}`}>
             <p className="text-2xl font-black tracking-tight text-brand drop-shadow-[0_0_8px_rgba(var(--brand-color-rgb),0.5)]">{convertingFiles.length}</p>
-            <p className={`text-[9px] font-black uppercase tracking-[0.15em] mt-0.5 ${isDark ? "text-brand/70" : "text-brand/80"}`}>Active</p>
+            <p className={`text-[9px] font-black uppercase tracking-[0.15em] mt-0.5 ${isDark ? "text-brand/70" : "text-brand/80"}`}>{t("conversion.active")}</p>
           </div>
           <div className={`rounded-xl p-3 flex flex-col items-center justify-center transition-all duration-300 hover:-translate-y-0.5 hover:shadow-lg ${isDark ? "bg-gradient-to-br from-success-500/10 to-success-500/5 ring-1 ring-success-500/20 shadow-[0_4px_20px_rgba(34,197,94,0.15)]" : "bg-success-500/5 border border-success-500/20 shadow-sm"}`}>
             <p className="text-2xl font-black tracking-tight text-success-500 drop-shadow-[0_0_8px_rgba(34,197,94,0.5)]">{completedFiles.length}</p>
-            <p className={`text-[9px] font-black uppercase tracking-[0.15em] mt-0.5 ${isDark ? "text-success-500/70" : "text-success-500/80"}`}>Done</p>
+            <p className={`text-[9px] font-black uppercase tracking-[0.15em] mt-0.5 ${isDark ? "text-success-500/70" : "text-success-500/80"}`}>{t("conversion.done")}</p>
           </div>
           <div className={`rounded-xl p-3 flex flex-col items-center justify-center transition-all duration-300 hover:-translate-y-0.5 hover:shadow-lg ${isDark ? "bg-gradient-to-br from-error-500/10 to-error-500/5 ring-1 ring-error-500/20 shadow-[0_4px_20px_rgba(239,68,68,0.15)]" : "bg-error-500/5 border border-error-500/20 shadow-sm"}`}>
             <p className="text-2xl font-black tracking-tight text-error-500 drop-shadow-[0_0_8px_rgba(239,68,68,0.5)]">{errorFiles.length}</p>
-            <p className={`text-[9px] font-black uppercase tracking-[0.15em] mt-0.5 ${isDark ? "text-error-500/70" : "text-error-500/80"}`}>Failed</p>
+            <p className={`text-[9px] font-black uppercase tracking-[0.15em] mt-0.5 ${isDark ? "text-error-500/70" : "text-error-500/80"}`}>{t("conversion.failed")}</p>
           </div>
         </div>
 
         {/* Global Format Selector */}
         {uniqueExtensions.length === 1 && (
           <div className="space-y-2">
-            <label className={`text-[11px] font-bold tracking-widest uppercase ${isDark ? "text-dark-400" : "text-dark-500"}`}>Target Format</label>
+            <label className={`text-[11px] font-bold tracking-widest uppercase ${isDark ? "text-dark-400" : "text-dark-500"}`}>{t("conversion.targetFormat")}</label>
             <div className="relative">
               <motion.button
                 className={`w-full flex items-center justify-between px-4 py-3.5 rounded-xl text-left transition-all duration-300 hover:shadow-lg ${
@@ -197,7 +226,7 @@ export function ConversionPanel() {
                   ? `${isDark ? "text-white" : "text-dark-900"} font-bold tracking-wide` 
                   : isDark ? "text-dark-500" : "text-dark-400 font-medium"
                 }>
-                  {globalOutputFormat ? globalOutputFormat.toUpperCase() : "SELECT FORMAT..."}
+                  {globalOutputFormat ? globalOutputFormat.toUpperCase() : t("conversion.selectFormatPlaceholder")}
                 </span>
                 <div className={`p-1 rounded-md ${isDark ? "bg-dark-700/50" : "bg-dark-100"}`}>
                   <ChevronDown
@@ -220,26 +249,36 @@ export function ConversionPanel() {
                     transition={{ type: "spring", stiffness: 400, damping: 30 }}
                   >
                     <div className="p-2 max-h-56 overflow-y-auto custom-scrollbar flex flex-col gap-1">
-                      {commonFormats.map((format) => (
-                        <motion.button
-                          key={format}
-                          className={`w-full text-left px-4 py-2.5 rounded-lg text-sm transition-colors flex justify-between items-center ${
-                            globalOutputFormat === format
-                              ? "bg-brand/10 text-brand font-bold"
-                              : isDark
-                                ? "text-dark-300 hover:bg-dark-700/50 hover:text-white"
-                                : "text-dark-600 hover:bg-dark-100 hover:text-dark-900"
-                          }`}
-                          onClick={() => {
-                            setGlobalOutputFormat(format);
-                            setShowFormatDropdown(false);
-                          }}
-                          whileHover={{ x: 2 }}
-                        >
-                          <span className="uppercase tracking-wider">{format}</span>
-                          {globalOutputFormat === format && <CheckCircle className="w-4 h-4" />}
-                        </motion.button>
-                      ))}
+                      {commonFormats.map((format) => {
+                        const capId = capabilityIdForOutputFormat(format);
+                        const blocked = capId ? !isCapabilityUsable(getCapability(capId)) : false;
+                        return (
+                          <motion.button
+                            key={format}
+                            className={`w-full text-left px-4 py-2.5 rounded-lg text-sm transition-colors flex justify-between items-center ${
+                              blocked
+                                ? isDark
+                                  ? "text-dark-600 cursor-not-allowed opacity-50"
+                                  : "text-dark-300 cursor-not-allowed opacity-50"
+                                : globalOutputFormat === format
+                                  ? "bg-brand/10 text-brand font-bold"
+                                  : isDark
+                                    ? "text-dark-300 hover:bg-dark-700/50 hover:text-white"
+                                    : "text-dark-600 hover:bg-dark-100 hover:text-dark-900"
+                            }`}
+                            onClick={() => {
+                              if (blocked) return;
+                              setGlobalOutputFormat(format);
+                              setShowFormatDropdown(false);
+                            }}
+                            whileHover={blocked ? {} : { x: 2 }}
+                            title={blocked ? t("workflow.engineMissingShort") : undefined}
+                          >
+                            <span className="uppercase tracking-wider">{format}</span>
+                            {globalOutputFormat === format && !blocked && <CheckCircle className="w-4 h-4" />}
+                          </motion.button>
+                        );
+                      })}
                     </div>
                   </motion.div>
                 )}
@@ -267,7 +306,7 @@ export function ConversionPanel() {
           >
             <div className="flex flex-col">
               <span className={`text-[10px] font-bold uppercase tracking-wider ${isDark ? "text-amber-500/70" : "text-amber-600/70"}`}>
-                Active Preset
+                {t("conversion.activePreset")}
               </span>
               <span className={`text-sm font-semibold ${isDark ? "text-amber-400" : "text-amber-700"}`}>
                 {selectedPreset.name}
@@ -279,14 +318,14 @@ export function ConversionPanel() {
               }`}
               onClick={() => setSelectedPreset(null)}
             >
-              CLEAR
+              {t("conversion.clear")}
             </button>
           </motion.div>
         )}
 
         {/* Output Directory */}
         <div className="space-y-2">
-          <label className={`text-[11px] font-bold tracking-widest uppercase ${isDark ? "text-dark-400" : "text-dark-500"}`}>Destination</label>
+          <label className={`text-[11px] font-bold tracking-widest uppercase ${isDark ? "text-dark-400" : "text-dark-500"}`}>{t("conversion.destination")}</label>
           <motion.button
             className={`w-full flex items-center justify-between px-4 py-3.5 rounded-xl text-left transition-all duration-300 group hover:shadow-lg ${
               isDark ? "bg-gradient-to-b from-white/5 to-transparent ring-1 ring-white/10 hover:ring-brand/50 hover:shadow-[0_0_15px_rgba(var(--brand-color-rgb),0.1)]" : "bg-white/60 border border-dark-200/50 hover:border-brand"
@@ -300,7 +339,7 @@ export function ConversionPanel() {
                 isDark ? "text-dark-400" : "text-dark-500"
               }`} />
               <span className={`text-sm truncate font-medium ${isDark ? "text-dark-300" : "text-dark-700"}`}>
-                {settings.outputDirectory || "Select folder..."}
+                {settings.outputDirectory || t("conversion.selectFolderPlaceholder")}
               </span>
             </div>
           </motion.button>
@@ -318,7 +357,7 @@ export function ConversionPanel() {
             <div className={`p-1.5 rounded-md transition-colors ${isDark ? "bg-brand/20 text-brand ring-1 ring-brand/30" : "bg-brand/10 text-brand"}`}>
               <Sliders className="w-4 h-4" />
             </div>
-            Advanced Configuration
+            {t("conversion.advancedConfiguration")}
           </span>
           <ChevronDown
             className={`w-4 h-4 transition-transform ${isDark ? "text-dark-500" : "text-dark-400"} ${
@@ -339,7 +378,7 @@ export function ConversionPanel() {
               {/* Quality Slider */}
               <div className={`space-y-3 p-4 rounded-xl border ${isDark ? "bg-dark-800/30 border-dark-700/50" : "bg-white/50 border-dark-100"}`}>
                 <div className="flex justify-between items-center">
-                  <label className={`text-[11px] font-bold tracking-widest uppercase ${isDark ? "text-dark-400" : "text-dark-500"}`}>Conversion Quality</label>
+                  <label className={`text-[11px] font-bold tracking-widest uppercase ${isDark ? "text-dark-400" : "text-dark-500"}`}>{t("conversion.conversionQuality")}</label>
                   <span className="text-sm font-bold bg-brand/10 text-brand px-2 py-0.5 rounded-md">{quality}%</span>
                 </div>
                 <input
@@ -353,16 +392,21 @@ export function ConversionPanel() {
                   }`}
                 />
                 <div className={`flex justify-between text-[10px] font-bold uppercase tracking-wider ${isDark ? "text-dark-500" : "text-dark-400"}`}>
-                  <span>Fast / Comp</span>
-                  <span>High Detail</span>
+                  <span>{t("conversion.fastCompressed")}</span>
+                  <span>{t("conversion.highDetail")}</span>
                 </div>
+                {isWebpImageTarget && (
+                  <p className={`text-[10px] ${isDark ? "text-amber-500/80" : "text-amber-600"}`}>
+                    {t("conversion.webpLosslessNote")}
+                  </p>
+                )}
               </div>
 
               {/* Preserve Metadata */}
               <label className={`flex items-center justify-between p-4 rounded-xl border cursor-pointer hover:border-brand/50 transition-colors ${
                 isDark ? "bg-dark-800/30 border-dark-700/50" : "bg-white/50 border-dark-100"
               }`}>
-                <span className={`text-sm font-semibold ${isDark ? "text-dark-300" : "text-dark-700"}`}>Preserve Metadata</span>
+                <span className={`text-sm font-semibold ${isDark ? "text-dark-300" : "text-dark-700"}`}>{t("conversion.preserveMetadata")}</span>
                 <div
                   className={`w-12 h-6 rounded-full transition-colors relative shadow-inner ${
                     preserveMetadata ? "bg-brand" : isDark ? "bg-dark-700" : "bg-dark-200"
@@ -381,7 +425,7 @@ export function ConversionPanel() {
               {isVideoContext && (
                 <div className={`p-4 rounded-xl border space-y-4 ${isDark ? "bg-dark-800/30 border-dark-700/50" : "bg-white/50 border-dark-100"}`}>
                   <h4 className={`text-xs font-bold uppercase tracking-wider flex items-center gap-2 ${isDark ? "text-dark-300" : "text-dark-600"}`}>
-                    <Video className="w-4 h-4" /> Video Options
+                    <Video className="w-4 h-4" /> {t("conversion.videoOptions")}
                   </h4>
 
                   {/* Hardware Acceleration Toggle */}
@@ -390,10 +434,10 @@ export function ConversionPanel() {
                   }`}>
                     <div>
                       <span className={`text-sm font-semibold flex items-center gap-2 ${isDark ? "text-dark-300" : "text-dark-700"}`}>
-                        <Cpu className="w-4 h-4 text-brand" /> Hardware Acceleration
+                        <Cpu className="w-4 h-4 text-brand" /> {t("conversion.hardwareAcceleration")}
                       </span>
                       <span className={`block text-[10px] mt-1 ${isDark ? "text-dark-500" : "text-dark-400"}`}>
-                         {hwEncoders && hwEncoders.available ? `Detected: ${hwEncoders.encoders.map(e => e.name).join(', ')}` : "No compatible GPU encoder detected"}
+                         {hwEncoders && hwEncoders.available ? `${t("conversion.detected")}: ${hwEncoders.encoders.map(e => e.name).join(', ')}` : t("conversion.noGpuEncoderDetected")}
                       </span>
                     </div>
                     <div
@@ -416,7 +460,7 @@ export function ConversionPanel() {
                   <div className="grid grid-cols-2 gap-4">
                     {/* Resolution */}
                     <div className="space-y-1.5">
-                      <label className={`text-[10px] font-bold uppercase tracking-wider ${isDark ? "text-dark-400" : "text-dark-500"}`}>Resolution</label>
+                      <label className={`text-[10px] font-bold uppercase tracking-wider ${isDark ? "text-dark-400" : "text-dark-500"}`}>{t("conversion.resolution")}</label>
                       <select
                         value={settings.presetResolution}
                         onChange={(e) => updateSettings({ presetResolution: e.target.value })}
@@ -435,7 +479,7 @@ export function ConversionPanel() {
 
                     {/* Frame Rate */}
                     <div className="space-y-1.5">
-                      <label className={`text-[10px] font-bold uppercase tracking-wider ${isDark ? "text-dark-400" : "text-dark-500"}`}>Frame Rate</label>
+                      <label className={`text-[10px] font-bold uppercase tracking-wider ${isDark ? "text-dark-400" : "text-dark-500"}`}>{t("conversion.frameRate")}</label>
                       <select
                         value={settings.fps}
                         onChange={(e) => updateSettings({ fps: e.target.value })}
@@ -455,7 +499,7 @@ export function ConversionPanel() {
                   {settings.presetResolution === "Custom" && (
                     <div className="grid grid-cols-[1fr_auto_1fr] gap-2 items-end">
                       <div className="space-y-1.5">
-                        <label className={`text-[10px] font-bold uppercase tracking-wider ${isDark ? "text-dark-400" : "text-dark-500"}`}>Width (px)</label>
+                        <label className={`text-[10px] font-bold uppercase tracking-wider ${isDark ? "text-dark-400" : "text-dark-500"}`}>{t("conversion.widthPx")}</label>
                         <input
                           type="number"
                           value={settings.customWidth}
@@ -473,13 +517,13 @@ export function ConversionPanel() {
                             : isDark ? "bg-dark-800 border-dark-700 text-dark-400" : "bg-dark-50 border-dark-200 text-dark-500"
                         }`}
                         onClick={() => updateSettings({ maintainAspectRatio: !settings.maintainAspectRatio })}
-                        title={settings.maintainAspectRatio ? "Unlock aspect ratio" : "Lock aspect ratio"}
+                        title={settings.maintainAspectRatio ? t("conversion.unlockAspectRatio") : t("conversion.lockAspectRatio")}
                       >
                         {settings.maintainAspectRatio ? <Lock className="w-4 h-4" /> : <Unlock className="w-4 h-4" />}
                       </button>
 
                       <div className="space-y-1.5">
-                        <label className={`text-[10px] font-bold uppercase tracking-wider ${isDark ? "text-dark-400" : "text-dark-500"}`}>Height (px)</label>
+                        <label className={`text-[10px] font-bold uppercase tracking-wider ${isDark ? "text-dark-400" : "text-dark-500"}`}>{t("conversion.heightPx")}</label>
                         <input
                           type="number"
                           value={settings.customHeight}
@@ -496,7 +540,7 @@ export function ConversionPanel() {
                     {/* Video Codec */}
                     <div className="space-y-1.5">
                       <label className={`text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 ${isDark ? "text-dark-400" : "text-dark-500"}`}>
-                        Video Codec
+                        {t("conversion.videoCodec")}
                         {settings.videoCodec === "AV1" && (
                           <div title="AV1 encoding without hardware acceleration is significantly slower than H.264/H.265.">
                             <AlertTriangle className="w-3 h-3 text-amber-500 cursor-help" />
@@ -523,13 +567,13 @@ export function ConversionPanel() {
                   {/* Audio Settings Expansion */}
                   <div className={`border-t pt-4 ${isDark ? "border-dark-700/50" : "border-dark-200"}`}>
                     <h4 className={`text-xs font-bold uppercase tracking-wider flex items-center gap-2 mb-3 ${isDark ? "text-dark-300" : "text-dark-600"}`}>
-                      <Volume2 className="w-4 h-4" /> Audio & Subtitles
+                      <Volume2 className="w-4 h-4" /> {t("conversion.audioSubtitles")}
                     </h4>
                     <div className="grid grid-cols-2 gap-4 mb-4">
                       {/* Audio Codec */}
                       <div className="space-y-1.5">
                         <label className={`text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 ${isDark ? "text-dark-400" : "text-dark-500"}`}>
-                          Audio Codec
+                          {t("conversion.audioCodec")}
                         </label>
                         <select
                           value={settings.audioCodec}
@@ -547,7 +591,7 @@ export function ConversionPanel() {
 
                       {/* Channels */}
                       <div className="space-y-1.5">
-                        <label className={`text-[10px] font-bold uppercase tracking-wider ${isDark ? "text-dark-400" : "text-dark-500"}`}>Channels</label>
+                        <label className={`text-[10px] font-bold uppercase tracking-wider ${isDark ? "text-dark-400" : "text-dark-500"}`}>{t("conversion.channels")}</label>
                         <select
                           value={settings.channelLayout}
                           onChange={(e) => updateSettings({ channelLayout: e.target.value })}
@@ -564,7 +608,7 @@ export function ConversionPanel() {
 
                     <div className="grid grid-cols-2 gap-4 mb-4">
                       <div className="space-y-1.5">
-                        <label className={`text-[10px] font-bold uppercase tracking-wider ${isDark ? "text-dark-400" : "text-dark-500"}`}>Sample Rate</label>
+                        <label className={`text-[10px] font-bold uppercase tracking-wider ${isDark ? "text-dark-400" : "text-dark-500"}`}>{t("conversion.sampleRate")}</label>
                         <select
                           value={settings.audioSampleRate}
                           onChange={(e) => updateSettings({ audioSampleRate: e.target.value })}
@@ -580,7 +624,7 @@ export function ConversionPanel() {
                       {/* Subtitles Input */}
                       <div className="space-y-1.5">
                         <label className={`text-[10px] font-bold uppercase tracking-wider flex items-center gap-1 ${isDark ? "text-dark-400" : "text-dark-500"}`}>
-                          <Subtitles className="w-3 h-3" /> Subtitles
+                          <Subtitles className="w-3 h-3" /> {t("conversion.subtitles")}
                         </label>
                         <select
                           value={settings.subtitleAction}
@@ -589,14 +633,14 @@ export function ConversionPanel() {
                             isDark ? "bg-dark-900 border border-dark-700 text-white focus:border-brand" : "bg-white border border-dark-200 text-dark-900 focus:border-brand"
                           }`}
                         >
-                          <option value="No Change">No Change (Copy tracks)</option>
-                          <option value="Strip All">Strip All</option>
+                          <option value="No Change">{t("conversion.noChangeCopyTracks")}</option>
+                          <option value="Strip All">{t("conversion.stripAll")}</option>
                           {(() => {
                             const firstAudioWithSubs = filesToConvert.find(f => f.subtitles && f.subtitles.length > 0);
                             if (firstAudioWithSubs?.subtitles) {
                                return firstAudioWithSubs.subtitles.map((sub, i) => (
                                   <option key={sub.index} value={`Burn-in-${sub.index}`}>
-                                    Burn in: {sub.title || sub.language || `Stream ${i + 1}`} ({sub.codec})
+                                    {t("conversion.burnIn")}: {sub.title || sub.language || `${t("conversion.stream")} ${i + 1}`} ({sub.codec})
                                   </option>
                                ));
                             }
@@ -610,7 +654,7 @@ export function ConversionPanel() {
                       {/* Audio Bitrate */}
                       <div className="space-y-3 pt-1">
                           <div className="flex justify-between items-center gap-2">
-                            <label className={`text-[10px] font-bold uppercase tracking-wider truncate min-w-0 ${isDark ? "text-dark-400" : "text-dark-500"}`}>Audio Bitrate</label>
+                            <label className={`text-[10px] font-bold uppercase tracking-wider truncate min-w-0 ${isDark ? "text-dark-400" : "text-dark-500"}`}>{t("conversion.audioBitrate")}</label>
                             <span className="text-[11px] font-bold text-brand bg-brand/10 px-1.5 py-0.5 rounded whitespace-nowrap shrink-0">{settings.audioBitrateKbps} kbps</span>
                           </div>
                           <input
@@ -625,7 +669,7 @@ export function ConversionPanel() {
                       {/* Volume Adjust */}
                       <div className="space-y-3 pt-1">
                           <div className="flex justify-between items-center gap-2">
-                            <label className={`text-[10px] font-bold uppercase tracking-wider truncate min-w-0 ${isDark ? "text-dark-400" : "text-dark-500"}`}>Volume</label>
+                            <label className={`text-[10px] font-bold uppercase tracking-wider truncate min-w-0 ${isDark ? "text-dark-400" : "text-dark-500"}`}>{t("conversion.volume")}</label>
                             <span className="text-[11px] font-bold text-brand bg-brand/10 px-1.5 py-0.5 rounded whitespace-nowrap shrink-0">{settings.volumeDb > 0 ? "+" : ""}{settings.volumeDb} dB</span>
                           </div>
                           <input
@@ -641,7 +685,7 @@ export function ConversionPanel() {
 
                   {/* Bitrate Mode Toggle */}
                   <div className="flex items-center justify-between gap-4 pt-2">
-                    <label className={`text-[10px] font-bold uppercase tracking-wider whitespace-nowrap ${isDark ? "text-dark-400" : "text-dark-500"}`}>Bitrate Mode</label>
+                    <label className={`text-[10px] font-bold uppercase tracking-wider whitespace-nowrap ${isDark ? "text-dark-400" : "text-dark-500"}`}>{t("conversion.bitrateMode")}</label>
                     <div className={`flex rounded-lg overflow-hidden border h-8 ${isDark ? "border-dark-700" : "border-dark-200"}`}>
                       <button 
                         onClick={() => updateSettings({ bitrateMode: "VBR" })}
@@ -662,7 +706,7 @@ export function ConversionPanel() {
                   <div className="space-y-3 pt-2">
                     <div className="flex justify-between items-center">
                       <label className={`text-[10px] font-bold tracking-widest uppercase ${isDark ? "text-dark-400" : "text-dark-500"}`}>
-                        {settings.bitrateMode === "VBR" ? "Constant Rate Factor (CRF)" : "Target Bitrate"}
+                        {settings.bitrateMode === "VBR" ? t("conversion.crf") : t("conversion.targetBitrate")}
                       </label>
                       <span className="text-sm font-bold bg-brand/10 text-brand px-2 py-0.5 rounded-md">
                         {settings.bitrateMode === "VBR" ? settings.crf : `${settings.videoBitrate} Mbps`}
@@ -679,8 +723,8 @@ export function ConversionPanel() {
                           className={`w-full h-2 rounded-lg appearance-none cursor-pointer accent-brand ${isDark ? "bg-dark-700" : "bg-dark-200"}`}
                         />
                         <div className={`flex justify-between text-[10px] font-bold uppercase tracking-wider ${isDark ? "text-dark-500" : "text-dark-400"}`}>
-                          <span>Lossless (0)</span>
-                          <span>Lowest (51)</span>
+                          <span>{t("conversion.lossless")}</span>
+                          <span>{t("conversion.lowest")}</span>
                         </div>
                        </>
                     ) : (
@@ -704,9 +748,9 @@ export function ConversionPanel() {
                   {/* 2-Pass Encoding Toggle */}
                   <label className={`flex items-center justify-between py-2 cursor-pointer group ${settings.bitrateMode === "VBR" ? "opacity-50" : ""}`}>
                     <span className={`text-sm font-semibold ${isDark ? "text-dark-300" : "text-dark-700"}`}>
-                      2-Pass Encoding
+                      {t("conversion.twoPassEncoding")}
                       <span className={`block text-[10px] mt-0.5 uppercase tracking-wider ${isDark ? "text-dark-500" : "text-dark-400"}`}>
-                         {settings.bitrateMode === "VBR" ? "Unavailable in VBR mode" : "Improves quality but takes twice as long"}
+                         {settings.bitrateMode === "VBR" ? t("conversion.twoPassUnavailableVbr") : t("conversion.twoPassDescription")}
                       </span>
                     </span>
                     <div
@@ -737,9 +781,9 @@ export function ConversionPanel() {
                  <HardDrive className="w-5 h-5" />
                </div>
                <div className="min-w-0">
-                 <h4 className={`text-sm font-black tracking-wide truncate ${isDark ? "text-white drop-shadow-sm" : "text-dark-700"}`}>Estimated Output Size</h4>
+                 <h4 className={`text-sm font-black tracking-wide truncate ${isDark ? "text-white drop-shadow-sm" : "text-dark-700"}`}>{t("conversion.estimatedOutputSize")}</h4>
                  <p className={`text-[9px] font-bold uppercase tracking-[0.1em] mt-0.5 truncate ${isDark ? "text-dark-400" : "text-brand/60"}`}>
-                   Based on active format & duration
+                   {t("conversion.estimatedOutputBasis")}
                  </p>
                </div>
             </div>
@@ -748,7 +792,7 @@ export function ConversionPanel() {
                  {estimatedSizeMb < 1000 ? `${estimatedSizeMb.toFixed(1)} MB` : `${(estimatedSizeMb / 1024).toFixed(2)} GB`}
                </span>
                <span className={`block text-[9px] uppercase font-black tracking-[0.2em] mt-0.5 whitespace-nowrap ${isDark ? "text-brand/60" : "text-brand/80"}`}>
-                 ~ Total
+                 {t("conversion.total")}
                </span>
             </div>
           </div>
@@ -781,7 +825,7 @@ export function ConversionPanel() {
               />
             )}
             <Play className={`w-5 h-5 ${canConvert ? "fill-white" : ""}`} />
-            PROCESS {filesToConvert.length} FILE{filesToConvert.length !== 1 ? "S" : ""}
+            {t("workflow.processLabel").toUpperCase()} {filesToConvert.length} {t("workflow.fileWord").toUpperCase()}
           </motion.button>
         )}
 
@@ -794,7 +838,7 @@ export function ConversionPanel() {
             whileTap={{ scale: 0.98 }}
           >
             <Pause className="w-5 h-5 fill-error-500" />
-            ABORT {convertingFiles.length} ACTIVE
+            {t("workflow.abortLabel").toUpperCase()} {convertingFiles.length} {t("workflow.activeLabel").toUpperCase()}
           </motion.button>
         )}
 
@@ -806,18 +850,35 @@ export function ConversionPanel() {
                 isDark ? "bg-success-500/10 text-success-500 border border-success-500/20" : "bg-success-50 text-success-600 border border-success-200/50"
               }`}>
                 <CheckCircle className="w-5 h-5" />
-                ALL OPERATIONS COMPLETE
+                {t("workflow.allOperationsComplete").toUpperCase()}
               </div>
             ) : (
               <span className={`text-[11px] font-bold uppercase tracking-widest ${isDark ? "text-dark-500" : "text-dark-400"}`}>
-                Awaiting Files
+                {t("workflow.awaitingFiles")}
               </span>
             )}
           </div>
         )}
 
         {/* Warnings */}
-        {!canConvert && filesToConvert.length > 0 && (
+        {blockedCapability && filesToConvert.length > 0 && (
+          <motion.div
+            className={`mt-4 flex items-start gap-2 p-3 rounded-lg text-xs font-semibold ${
+              isDark ? "bg-amber-500/10 text-amber-500 border border-amber-500/20" : "bg-amber-50 text-amber-600/90 border border-amber-200"
+            }`}
+            initial={{ opacity: 0, y: 5 }}
+            animate={{ opacity: 1, y: 0 }}
+          >
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>
+              {translateCapabilityState(blockedCapability.state)}
+              {" — "}
+              {t("workflow.featureUnavailableTitle")}.
+            </span>
+          </motion.div>
+        )}
+
+        {!canConvert && !blockedCapability && filesToConvert.length > 0 && (
           <motion.div
             className={`mt-4 flex items-center justify-center gap-2 p-3 rounded-lg text-xs font-semibold ${
               isDark ? "bg-amber-500/10 text-amber-500 border border-amber-500/20" : "bg-amber-50 text-amber-600/90 border border-amber-200"
@@ -826,7 +887,7 @@ export function ConversionPanel() {
             animate={{ opacity: 1, y: 0 }}
           >
             <AlertTriangle className="w-4 h-4" />
-            Target format required for all files
+            {t("workflow.targetFormatRequired")}
           </motion.div>
         )}
       </div>

@@ -14,6 +14,7 @@ import { usePdfDocument } from "./hooks/usePdfDocument";
 import { savePdfWithTextEditsSmart } from "./services/pdfSaveService";
 import type { ToolType, ToolOptions, AnnotationData, TextBlock } from "./types";
 import { DEFAULT_TOOL_OPTIONS } from "./types";
+import { t, translateErrorCode } from "../../locales";
 
 interface PdfEditorProps {
   filePath: string;
@@ -82,7 +83,7 @@ export function PdfEditor({ filePath, fileName, onClose, isDark }: PdfEditorProp
         console.log("PDF loaded successfully");
       } catch (err) {
         console.error("Failed to load PDF:", err);
-        setError(err instanceof Error ? err.message : "Failed to load PDF file");
+        setError(err instanceof Error ? err.message : t("pdfEditor.pdfLoadFailed"));
       } finally {
         setIsLoading(false);
       }
@@ -237,13 +238,13 @@ export function PdfEditor({ filePath, fileName, onClose, isDark }: PdfEditorProp
       }
       
       if (changes.length > 0) {
-        toast.success(`PDF saved with ${changes.join(', ')}!`);
+        toast.success(`${t("pdfEditor.pdfSavedSuccess")} (${changes.join(', ')})`);
       } else {
-        toast.success("PDF saved successfully!");
+        toast.success(t("pdfEditor.pdfSavedSuccess"));
       }
     } catch (err) {
       console.error("Failed to save PDF:", err);
-      toast.error("Failed to save PDF");
+      toast.error(t("pdfEditor.pdfSaveFailed"));
     } finally {
       setIsSaving(false);
     }
@@ -274,7 +275,7 @@ export function PdfEditor({ filePath, fileName, onClose, isDark }: PdfEditorProp
       }));
 
       // Use smart save - lopdf for true text editing, with whiteout fallback
-      const { bytes: modifiedBytes, usedLopdf, editsApplied } = await savePdfWithTextEditsSmart(
+      const { bytes: modifiedBytes, editsApplied } = await savePdfWithTextEditsSmart(
         filePath,
         savePath,
         pdfBytesRef.current.buffer as ArrayBuffer,
@@ -298,14 +299,13 @@ export function PdfEditor({ filePath, fileName, onClose, isDark }: PdfEditorProp
       await writeFile(savePath, finalBytes);
 
       if (editsApplied > 0) {
-        const method = usedLopdf ? "(text replaced)" : "(whiteout)";
-        toast.success(`PDF saved with ${editsApplied} text edit${editsApplied > 1 ? 's' : ''} ${method}!`);
+        toast.success(`${t("pdfEditor.pdfSavedSuccess")} (${editsApplied})`);
       } else {
-        toast.success("PDF saved successfully!");
+        toast.success(t("pdfEditor.pdfSavedSuccess"));
       }
     } catch (err) {
       console.error("Failed to save PDF:", err);
-      toast.error("Failed to save PDF");
+      toast.error(t("pdfEditor.pdfSaveFailed"));
     } finally {
       setIsSaving(false);
     }
@@ -332,7 +332,7 @@ export function PdfEditor({ filePath, fileName, onClose, isDark }: PdfEditorProp
 
   const handleClose = useCallback(() => {
     if (hasChanges) {
-      if (confirm("You have unsaved changes. Are you sure you want to close?")) {
+      if (confirm(t("pdfEditor.confirmCloseUnsaved"))) {
         onClose();
       }
     } else {
@@ -375,7 +375,7 @@ export function PdfEditor({ filePath, fileName, onClose, isDark }: PdfEditorProp
             </h2>
             {hasChanges && (
               <span className="px-2 py-0.5 text-xs rounded bg-amber-500/20 text-amber-500">
-                Unsaved changes
+                {t("pdfEditor.unsavedChanges")}
               </span>
             )}
             
@@ -393,10 +393,10 @@ export function PdfEditor({ filePath, fileName, onClose, isDark }: PdfEditorProp
               onClick={() => setTextEditingEnabled(!textEditingEnabled)}
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
-              title={textEditingEnabled ? "Click to disable text editing" : "Click to enable text editing"}
+              title={textEditingEnabled ? t("pdfEditor.disableTextEditing") : t("pdfEditor.enableTextEditing")}
             >
               <Type className="w-3.5 h-3.5" />
-              <span>Edit Text: {textEditingEnabled ? "On" : "Off"}</span>
+              <span>{textEditingEnabled ? t("pdfEditor.editTextOn") : t("pdfEditor.editTextOff")}</span>
             </motion.button>
             
             {/* Form fields toggle - only show if PDF has form fields */}
@@ -414,10 +414,10 @@ export function PdfEditor({ filePath, fileName, onClose, isDark }: PdfEditorProp
                 onClick={() => setFormFieldsEnabled(!formFieldsEnabled)}
                 whileHover={{ scale: 1.02 }}
                 whileTap={{ scale: 0.98 }}
-                title={formFieldsEnabled ? "Click to hide form fields" : "Click to show form fields"}
+                title={formFieldsEnabled ? t("pdfEditor.hideFormFields") : t("pdfEditor.showFormFields")}
               >
                 <FileText className="w-3.5 h-3.5" />
-                <span>Forms: {formFieldsEnabled ? "On" : "Off"} ({formFields.length})</span>
+                <span>{formFieldsEnabled ? t("pdfEditor.formsOn") : t("pdfEditor.formsOff")} ({formFields.length})</span>
               </motion.button>
             )}
           </div>
@@ -444,7 +444,7 @@ export function PdfEditor({ filePath, fileName, onClose, isDark }: PdfEditorProp
                 isDark ? "text-accent-500" : "text-accent-600"
               }`} />
               <p className={isDark ? "text-dark-300" : "text-gray-600"}>
-                Loading PDF...
+                {t("pdfEditor.loadingPdf")}
               </p>
             </div>
           </div>
@@ -455,14 +455,14 @@ export function PdfEditor({ filePath, fileName, onClose, isDark }: PdfEditorProp
           <div className="flex-1 flex items-center justify-center">
             <div className="text-center">
               <AlertCircle className="w-12 h-12 mx-auto mb-4 text-error-500" />
-              <p className="text-error-500 mb-4">{error}</p>
+              <p className="text-error-500 mb-4">{translateErrorCode(error)}</p>
               <motion.button
                 className="px-4 py-2 bg-accent-600 text-white rounded-lg"
                 onClick={handleClose}
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
               >
-                Close
+                {t("pdfEditor.close")}
               </motion.button>
             </div>
           </div>
@@ -550,11 +550,11 @@ export function PdfEditor({ filePath, fileName, onClose, isDark }: PdfEditorProp
                 onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
                 disabled={currentPage <= 1}
               >
-                Previous
+                {t("pdfEditor.previous")}
               </button>
-              
+
               <span className={`text-sm ${isDark ? "text-dark-300" : "text-gray-600"}`}>
-                Page{" "}
+                {t("pdfEditor.page")}{" "}
                 <input
                   type="number"
                   min={1}
@@ -570,7 +570,7 @@ export function PdfEditor({ filePath, fileName, onClose, isDark }: PdfEditorProp
                       : "bg-white border-gray-300 text-gray-900"
                   }`}
                 />{" "}
-                of {totalPages}
+                {t("pdfEditor.of")} {totalPages}
               </span>
 
               <button
@@ -586,7 +586,7 @@ export function PdfEditor({ filePath, fileName, onClose, isDark }: PdfEditorProp
                 onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
                 disabled={currentPage >= totalPages}
               >
-                Next
+                {t("pdfEditor.next")}
               </button>
             </div>
           </>
@@ -597,7 +597,7 @@ export function PdfEditor({ filePath, fileName, onClose, isDark }: PdfEditorProp
           <div className="absolute inset-0 bg-black/50 flex items-center justify-center z-50">
             <div className={`px-6 py-4 rounded-xl ${isDark ? "bg-dark-800" : "bg-white"}`}>
               <Loader2 className="w-8 h-8 mx-auto mb-2 animate-spin text-accent-500" />
-              <p className={isDark ? "text-white" : "text-gray-900"}>Saving PDF...</p>
+              <p className={isDark ? "text-white" : "text-gray-900"}>{t("pdfEditor.savingPdf")}</p>
             </div>
           </div>
         )}

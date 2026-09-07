@@ -20,6 +20,7 @@ import {
   RectangleEllipsis,
 } from "lucide-react";
 import type { ToolType, ToolOptions } from "./types";
+import { t } from "../../locales";
 
 interface ToolbarProps {
   activeTool: ToolType;
@@ -109,15 +110,15 @@ export function Toolbar({
   // are intentionally not offered here. See SECURITY_PHASE1_REPORT.md / PDF
   // editor audit for details. Re-add once save-path support / handlers exist.
   const tools: { type: ToolType; icon: React.ReactNode; label: string }[] = [
-    { type: "select", icon: <MousePointer2 className="w-5 h-5" />, label: "Select" },
-    { type: "text", icon: <Type className="w-5 h-5" />, label: "Text" },
-    { type: "rectangle", icon: <Square className="w-5 h-5" />, label: "Rectangle" },
-    { type: "circle", icon: <Circle className="w-5 h-5" />, label: "Circle" },
-    { type: "line", icon: <Minus className="w-5 h-5" />, label: "Line" },
-    { type: "arrow", icon: <MoveRight className="w-5 h-5" />, label: "Arrow" },
-    { type: "highlight", icon: <Highlighter className="w-5 h-5" />, label: "Highlight" },
-    { type: "whiteout", icon: <FileText className="w-5 h-5" />, label: "Whiteout" },
-    { type: "whiteoutReplace", icon: <RectangleEllipsis className="w-5 h-5" />, label: "Whiteout & Replace" },
+    { type: "select", icon: <MousePointer2 className="w-5 h-5" />, label: t("pdfEditor.select") },
+    { type: "text", icon: <Type className="w-5 h-5" />, label: t("pdfEditor.text") },
+    { type: "rectangle", icon: <Square className="w-5 h-5" />, label: t("pdfEditor.rectangle") },
+    { type: "circle", icon: <Circle className="w-5 h-5" />, label: t("pdfEditor.circle") },
+    { type: "line", icon: <Minus className="w-5 h-5" />, label: t("pdfEditor.line") },
+    { type: "arrow", icon: <MoveRight className="w-5 h-5" />, label: t("pdfEditor.arrow") },
+    { type: "highlight", icon: <Highlighter className="w-5 h-5" />, label: t("pdfEditor.highlight") },
+    { type: "whiteout", icon: <FileText className="w-5 h-5" />, label: t("pdfEditor.whiteout") },
+    { type: "whiteoutReplace", icon: <RectangleEllipsis className="w-5 h-5" />, label: t("pdfEditor.whiteoutReplace") },
   ];
 
   const strokeColors = [
@@ -144,7 +145,7 @@ export function Toolbar({
                 <Save className="w-5 h-5" />
               )
             }
-            label={isSaving ? "Saving..." : hasChanges ? "Save (Ctrl+S)" : "Save"}
+            label={isSaving ? t("pdfEditor.saving") : hasChanges ? `${t("pdfEditor.save")} (Ctrl+S)` : t("pdfEditor.save")}
             onClick={onSave}
             isDark={isDark}
             disabled={isSaving}
@@ -160,7 +161,7 @@ export function Toolbar({
         </div>
         <ToolButton
           icon={<Download className="w-5 h-5" />}
-          label="Save As (Ctrl+Shift+S)"
+          label={`${t("pdfEditor.saveAs")} (Ctrl+Shift+S)`}
           onClick={onSaveAs}
           isDark={isDark}
           disabled={isSaving}
@@ -171,21 +172,21 @@ export function Toolbar({
         {/* Undo/Redo */}
         <ToolButton
           icon={<Undo2 className="w-5 h-5" />}
-          label="Undo"
+          label={t("pdfEditor.undo")}
           onClick={onUndo}
           isDark={isDark}
           disabled={!canUndo}
         />
         <ToolButton
           icon={<Redo2 className="w-5 h-5" />}
-          label="Redo"
+          label={t("pdfEditor.redo")}
           onClick={onRedo}
           isDark={isDark}
           disabled={!canRedo}
         />
         <ToolButton
           icon={<Trash2 className="w-5 h-5" />}
-          label="Delete"
+          label={t("pdfEditor.delete")}
           onClick={onDelete}
           isDark={isDark}
         />
@@ -209,13 +210,13 @@ export function Toolbar({
         {/* Page operations */}
         <ToolButton
           icon={<RotateCcw className="w-5 h-5" />}
-          label="Rotate Left"
+          label={t("pdfEditor.rotateLeft")}
           onClick={() => onRotatePage(-90)}
           isDark={isDark}
         />
         <ToolButton
           icon={<RotateCw className="w-5 h-5" />}
-          label="Rotate Right"
+          label={t("pdfEditor.rotateRight")}
           onClick={() => onRotatePage(90)}
           isDark={isDark}
         />
@@ -225,7 +226,7 @@ export function Toolbar({
         {/* Zoom controls */}
         <ToolButton
           icon={<ZoomOut className="w-5 h-5" />}
-          label="Zoom Out"
+          label={t("pdfEditor.zoomOut")}
           onClick={() => onZoomChange(Math.max(0.25, zoom - 0.25))}
           isDark={isDark}
         />
@@ -234,7 +235,7 @@ export function Toolbar({
         </span>
         <ToolButton
           icon={<ZoomIn className="w-5 h-5" />}
-          label="Zoom In"
+          label={t("pdfEditor.zoomIn")}
           onClick={() => onZoomChange(Math.min(3, zoom + 0.25))}
           isDark={isDark}
         />
@@ -246,7 +247,7 @@ export function Toolbar({
         <div className={`flex items-center gap-4 px-4 py-2 border-t ${isDark ? "border-dark-700" : "border-gray-200"}`}>
           {/* Stroke color */}
           <div className="flex items-center gap-2">
-            <span className={`text-xs ${isDark ? "text-dark-400" : "text-gray-500"}`}>Color:</span>
+            <span className={`text-xs ${isDark ? "text-dark-400" : "text-gray-500"}`}>{t("pdfEditor.color")}</span>
             <div className="flex gap-1">
               {strokeColors.map((color) => (
                 <button
@@ -274,7 +275,7 @@ export function Toolbar({
           {/* Stroke width */}
           {activeTool !== "text" && activeTool !== "whiteoutReplace" && (
             <div className="flex items-center gap-2">
-              <span className={`text-xs ${isDark ? "text-dark-400" : "text-gray-500"}`}>Width:</span>
+              <span className={`text-xs ${isDark ? "text-dark-400" : "text-gray-500"}`}>{t("pdfEditor.width")}</span>
               <input
                 type="range"
                 min="1"
@@ -292,7 +293,7 @@ export function Toolbar({
           {/* Font size for text */}
           {activeTool === "text" && (
             <div className="flex items-center gap-2">
-              <span className={`text-xs ${isDark ? "text-dark-400" : "text-gray-500"}`}>Size:</span>
+              <span className={`text-xs ${isDark ? "text-dark-400" : "text-gray-500"}`}>{t("pdfEditor.size")}</span>
               <input
                 type="number"
                 min="8"
@@ -310,7 +311,7 @@ export function Toolbar({
 
           {/* Opacity */}
           <div className="flex items-center gap-2">
-            <span className={`text-xs ${isDark ? "text-dark-400" : "text-gray-500"}`}>Opacity:</span>
+            <span className={`text-xs ${isDark ? "text-dark-400" : "text-gray-500"}`}>{t("pdfEditor.opacity")}</span>
             <input
               type="range"
               min="0.1"

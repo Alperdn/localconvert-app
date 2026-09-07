@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "../store/useStore";
 import { formatFileSize } from "../types/formats";
+import { t } from "../locales";
 
 export function ImagePreviewModal() {
   const { files, settings, previewImageId, setPreviewImageId } = useStore();
@@ -141,7 +142,7 @@ export function ImagePreviewModal() {
               <div className="flex items-center justify-center w-[400px] h-[300px]">
                 <div className="flex flex-col items-center gap-3">
                   <Loader2 className="w-10 h-10 animate-spin text-accent-500" />
-                  <p className="text-dark-300 text-sm">Loading image...</p>
+                  <p className="text-dark-300 text-sm">{t("imagePreview.loadingImage")}</p>
                 </div>
               </div>
             ) : (

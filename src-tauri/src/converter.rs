@@ -17,7 +17,7 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 /// Get absolute path without the \\?\ prefix that canonicalize() adds on Windows
 /// This prefix can cause issues with some programs like LibreOffice
-fn get_absolute_path(path: &Path) -> std::path::PathBuf {
+pub(crate) fn get_absolute_path(path: &Path) -> std::path::PathBuf {
     match path.canonicalize() {
         Ok(p) => {
             let path_str = p.to_string_lossy();
@@ -48,21 +48,11 @@ pub fn set_app_handle(handle: AppHandle) {
 
 /// Get video/audio duration in seconds using ffprobe
 pub fn get_media_duration(input_path: &str) -> Option<f64> {
-    // ffprobe is typically in the same directory as ffmpeg
-    let ffmpeg_path = get_tool_path("ffmpeg");
-    let ffprobe_path = if cfg!(windows) {
-        if ffmpeg_path.contains("ffmpeg.exe") {
-            ffmpeg_path.replace("ffmpeg.exe", "ffprobe.exe")
-        } else {
-            "ffprobe.exe".to_string()
-        }
-    } else if ffmpeg_path.contains("ffmpeg") {
-        ffmpeg_path.replace("ffmpeg", "ffprobe")
-    } else {
-        "ffprobe".to_string()
-    };
-    
-    let mut command = Command::new(&ffprobe_path);
+    // Resolved centrally (bundled -> configured -> system) instead of
+    // deriving the ffprobe path ad hoc here - see engines::resolver.
+    let ffprobe = crate::engines::resolver::resolve(crate::engines::EngineId::Ffprobe).ok()?;
+
+    let mut command = Command::new(&ffprobe.path);
     command.args([
         "-v", "quiet",
         "-show_entries", "format=duration",
@@ -261,9 +251,9 @@ pub fn convert_file(
         "video" => convert_video(&input_path_str, &temp_output_str, output_format_clean, &options, job_id),
         "audio" => convert_audio(&input_path_str, &temp_output_str, output_format_clean, &options, job_id),
         "image" => convert_image(&input_path_str, &temp_output_str, output_format_clean, &options, job_id),
-        "document" | "ebook" => convert_document(&input_path_str, &temp_output_str, output_format_clean, &options, job_id),
-        "spreadsheet" => convert_spreadsheet(&input_path_str, &temp_output_str, output_format_clean, job_id),
-        "presentation" => convert_presentation(&input_path_str, &temp_output_str, output_format_clean, job_id),
+        "document" | "ebook" => convert_document(&input_path_str, &temp_output_str, output_format_clean, &options, job_id, job.path()),
+        "spreadsheet" => convert_spreadsheet(&input_path_str, &temp_output_str, output_format_clean, job_id, job.path()),
+        "presentation" => convert_presentation(&input_path_str, &temp_output_str, output_format_clean, job_id, job.path()),
         "archive" => convert_archive(&input_path_str, &temp_output_str, output_format_clean, &options, job_id),
         "vector" => convert_vector(&input_path_str, &temp_output_str, output_format_clean, &options, job_id),
         "font" => convert_font(&input_path_str, &temp_output_str, output_format_clean),
@@ -672,46 +662,56 @@ fn convert_image(
     options: &ConversionOptions,
     job_id: Option<&str>,
 ) -> Result<String, String> {
+    use crate::native::image as native_image;
+
+    // Common raster formats (JPEG/PNG/WebP/BMP/GIF/TIFF) go through the
+    // in-process pure-Rust pipeline - no external tool, no subprocess, no
+    // ImageMagick dependency. Special formats (AVIF/HEIC/PSD, or an
+    // extension the native pipeline doesn't recognize) fall back to
+    // ImageMagick, which is still required for those - see Step 2 final
+    // report classification.
+    if let Some(target) = native_image::NativeImageFormat::from_extension(format) {
+        let native_options = native_image::NativeConvertOptions {
+            width: options.width,
+            height: options.height,
+            quality: options.quality.map(|q| q.clamp(1, 100) as u8),
+            png_compression_level: options.compression_level.map(|c| c.clamp(0, 9) as u8),
+        };
+        return native_image::convert_file(Path::new(input), Path::new(output), target, &native_options)
+            .map(|_| output.to_string())
+            .map_err(|e| e.to_string());
+    }
+
     let mut args: Vec<String> = vec![input.to_string()];
-    
+
     // Add resize
     if let (Some(w), Some(h)) = (options.width, options.height) {
         args.push("-resize".to_string());
         args.push(format!("{}x{}", w, h));
     }
-    
+
     // Add quality
     if let Some(quality) = options.quality {
         args.push("-quality".to_string());
         args.push(quality.to_string());
     }
-    
+
     // Strip metadata if requested
     if options.preserve_metadata == Some(false) {
         args.push("-strip".to_string());
     }
-    
+
     // Format-specific settings
     match format {
-        "webp" => {
-            args.push("-define".to_string());
-            args.push("webp:lossless=false".to_string());
-        }
         "avif" => {
             args.push("-define".to_string());
             args.push("heic:speed=5".to_string());
         }
-        "png" => {
-            if let Some(level) = options.compression_level {
-                args.push("-define".to_string());
-                args.push(format!("png:compression-level={}", level));
-            }
-        }
         _ => {}
     }
-    
+
     args.push(output.to_string());
-    
+
     run_command_with_job_id("magick", &args, job_id, None)
         .map(|_| output.to_string())
 }
@@ -722,6 +722,7 @@ fn convert_document(
     format: &str,
     _options: &ConversionOptions,
     job_id: Option<&str>,
+    job_dir: &Path,
 ) -> Result<String, String> {
     let input_ext = Path::new(input)
         .extension()
@@ -756,86 +757,24 @@ fn convert_document(
                 .map(|_| output.to_string());
         }
         
-        // PDF to document formats - use LibreOffice
-        let output_path = Path::new(output);
-        let output_dir = output_path.parent().unwrap_or(Path::new("."));
-        
-        // Ensure output directory exists
-        if !output_dir.exists() {
-            std::fs::create_dir_all(output_dir)
-                .map_err(|e| format!("Failed to create output directory: {}", e))?;
-        }
-        
-        // Get absolute path for output directory (without \\?\ prefix)
-        let output_dir_abs = get_absolute_path(output_dir);
-        
-        // LibreOffice uses the actual output extension, not our requested one for md
-        let (filter, actual_ext) = match output_format_clean.as_str() {
-            "docx" => ("docx", "docx"),
-            "doc" => ("doc", "doc"),
-            "odt" => ("odt", "odt"),
-            "rtf" => ("rtf", "rtf"),
-            "html" => ("html", "html"),
-            "txt" => ("txt", "txt"),
-            "md" => ("txt", "txt"), // LibreOffice doesn't support md directly, convert to txt first
-            "epub" => ("epub", "epub"),
-            _ => ("txt", "txt"),
+        // PDF -> Office is reconstruction, not rendering - kept as an
+        // explicit, separate pipeline (see reconstruction.rs) rather than
+        // treated as just another LibreOffice `--convert-to` call. In
+        // particular, targets nothing here can actually produce (xlsx/
+        // pptx) now fail clearly instead of silently falling back to a
+        // mislabeled TXT export the way the old `_ => ("txt", "txt")`
+        // catch-all did.
+        use crate::reconstruction::{PdfToDocx, PdfToPptx, PdfToXlsx};
+        return match output_format_clean.as_str() {
+            "docx" | "doc" | "odt" | "rtf" | "html" | "txt" | "epub" => {
+                PdfToDocx::convert(input, output, output_format_clean.as_str(), job_dir).map_err(|e| e.to_string())
+            }
+            // LibreOffice doesn't support md directly - reconstruct to txt.
+            "md" => PdfToDocx::convert(input, output, "txt", job_dir).map_err(|e| e.to_string()),
+            "xlsx" | "xls" | "ods" => PdfToXlsx::convert(input, output, job_dir).map_err(|e| e.to_string()),
+            "pptx" | "ppt" | "odp" => PdfToPptx::convert(input, output, job_dir).map_err(|e| e.to_string()),
+            other => Err(format!("Unsupported PDF conversion target: {}", other)),
         };
-        
-        // Get absolute path for input file too (without \\?\ prefix)
-        let input_path = Path::new(input);
-        let input_abs = get_absolute_path(input_path);
-        
-        // Build args - PDF needs special import filter
-        let args = vec![
-            "--headless".to_string(),
-            "--infilter=writer_pdf_import".to_string(), // Required for PDF import
-            "--convert-to".to_string(),
-            filter.to_string(),
-            "--outdir".to_string(),
-            output_dir_abs.to_string_lossy().to_string(),
-            input_abs.to_string_lossy().to_string(),
-        ];
-        
-        let result = run_command_with_job_id("soffice", &args, job_id, None);
-        
-        if result.is_ok() {
-            // LibreOffice creates output with input filename + new extension
-            // e.g., input "document.pdf" -> "document.docx" in output_dir
-            let input_stem = input_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("output");
-            
-            let libreoffice_output = output_dir_abs.join(format!("{}.{}", input_stem, actual_ext));
-            
-            // Check if file was created
-            if !libreoffice_output.exists() {
-                // List files in directory to help debug
-                let files_in_dir: Vec<String> = std::fs::read_dir(&output_dir_abs)
-                    .map(|entries| {
-                        entries
-                            .filter_map(|e| e.ok())
-                            .map(|e| e.file_name().to_string_lossy().to_string())
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                
-                return Err(format!(
-                    "LibreOffice conversion completed but output file not found. Expected: {}, Files in directory: {:?}",
-                    libreoffice_output.display(),
-                    files_in_dir
-                ));
-            }
-            
-            // If the file LibreOffice created is different from our desired output, rename it
-            if libreoffice_output != output_path {
-                std::fs::rename(&libreoffice_output, output)
-                    .map_err(|e| format!("Failed to rename output file: {}", e))?;
-            }
-        }
-        
-        return result.map(|_| output.to_string());
     }
     
     // Use pandoc for markdown, HTML, and text conversions (non-PDF inputs)
@@ -852,20 +791,11 @@ fn convert_document(
             .map(|_| output.to_string());
     }
     
-    // Use LibreOffice for office documents
+    // Office document conversion (docx/doc/odt/rtf -> pdf/docx/doc/odt/
+    // rtf/html/txt) - routed through the centralized OfficeEngine, never
+    // a soffice command built inline here. See engines::office.
     let office_formats = ["docx", "doc", "odt", "rtf", "pdf", "xlsx", "xls", "pptx", "ppt"];
     if office_formats.contains(&input_ext.as_str()) || office_formats.contains(&output_format_clean.as_str()) {
-        let output_path = Path::new(output);
-        let output_dir = output_path.parent().unwrap_or(Path::new("."));
-        
-        // Ensure output directory exists
-        if !output_dir.exists() {
-            std::fs::create_dir_all(output_dir)
-                .map_err(|e| format!("Failed to create output directory: {}", e))?;
-        }
-        
-        let output_dir_abs = get_absolute_path(output_dir);
-        
         let filter = match output_format_clean.as_str() {
             "pdf" => "pdf",
             "docx" => "docx",
@@ -876,46 +806,10 @@ fn convert_document(
             "txt" => "txt",
             _ => "pdf",
         };
-        
-        let input_path = Path::new(input);
-        let input_abs = get_absolute_path(input_path);
-        
-        let args = vec![
-            "--headless".to_string(),
-            "--convert-to".to_string(),
-            filter.to_string(),
-            "--outdir".to_string(),
-            output_dir_abs.to_string_lossy().to_string(),
-            input_abs.to_string_lossy().to_string(),
-        ];
-        
-        let result = run_command_with_job_id("soffice", &args, job_id, None);
-        
-        if result.is_ok() {
-            // LibreOffice creates output with input filename + new extension
-            let input_stem = input_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("output");
-            
-            let libreoffice_output = output_dir_abs.join(format!("{}.{}", input_stem, filter));
-            
-            if !libreoffice_output.exists() {
-                return Err(format!(
-                    "LibreOffice conversion completed but output file not found at: {}",
-                    libreoffice_output.display()
-                ));
-            }
-            
-            if libreoffice_output != output_path {
-                std::fs::rename(&libreoffice_output, output)
-                    .map_err(|e| format!("Failed to rename output file: {}", e))?;
-            }
-        }
-        
-        return result.map(|_| output.to_string());
+
+        return crate::engines::office::convert(input, output, filter, false, job_dir).map_err(|e| e.to_string());
     }
-    
+
     Err("Unsupported document conversion".to_string())
 }
 
@@ -924,18 +818,9 @@ fn convert_spreadsheet(
     output: &str,
     format: &str,
     job_id: Option<&str>,
+    job_dir: &Path,
 ) -> Result<String, String> {
-    let output_path = Path::new(output);
-    let output_dir = output_path.parent().unwrap_or(Path::new("."));
-    
-    // Ensure output directory exists
-    if !output_dir.exists() {
-        std::fs::create_dir_all(output_dir)
-            .map_err(|e| format!("Failed to create output directory: {}", e))?;
-    }
-    
-    let output_dir_abs = get_absolute_path(output_dir);
-    
+    let _ = job_id;
     let filter = match format {
         "xlsx" => "xlsx",
         "xls" => "xls",
@@ -945,44 +830,8 @@ fn convert_spreadsheet(
         "html" => "html",
         _ => return Err(format!("Unsupported spreadsheet format: {}", format)),
     };
-    
-    let input_path = Path::new(input);
-    let input_abs = get_absolute_path(input_path);
-    
-    let args = vec![
-        "--headless".to_string(),
-        "--convert-to".to_string(),
-        filter.to_string(),
-        "--outdir".to_string(),
-        output_dir_abs.to_string_lossy().to_string(),
-        input_abs.to_string_lossy().to_string(),
-    ];
-    
-    let result = run_command_with_job_id("soffice", &args, job_id, None);
-    
-    if result.is_ok() {
-        // LibreOffice creates output with input filename + new extension
-        let input_stem = input_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("output");
-        
-        let libreoffice_output = output_dir_abs.join(format!("{}.{}", input_stem, filter));
-        
-        if !libreoffice_output.exists() {
-            return Err(format!(
-                "LibreOffice conversion completed but output file not found at: {}",
-                libreoffice_output.display()
-            ));
-        }
-        
-        if libreoffice_output != output_path {
-            std::fs::rename(&libreoffice_output, output)
-                .map_err(|e| format!("Failed to rename output file: {}", e))?;
-        }
-    }
-    
-    result.map(|_| output.to_string())
+
+    crate::engines::office::convert(input, output, filter, false, job_dir).map_err(|e| e.to_string())
 }
 
 fn convert_presentation(
@@ -990,18 +839,9 @@ fn convert_presentation(
     output: &str,
     format: &str,
     job_id: Option<&str>,
+    job_dir: &Path,
 ) -> Result<String, String> {
-    let output_path = Path::new(output);
-    let output_dir = output_path.parent().unwrap_or(Path::new("."));
-    
-    // Ensure output directory exists
-    if !output_dir.exists() {
-        std::fs::create_dir_all(output_dir)
-            .map_err(|e| format!("Failed to create output directory: {}", e))?;
-    }
-    
-    let output_dir_abs = get_absolute_path(output_dir);
-    
+    let _ = job_id;
     let filter = match format {
         "pptx" => "pptx",
         "ppt" => "ppt",
@@ -1009,44 +849,8 @@ fn convert_presentation(
         "pdf" => "pdf",
         _ => return Err(format!("Unsupported presentation format: {}", format)),
     };
-    
-    let input_path = Path::new(input);
-    let input_abs = get_absolute_path(input_path);
-    
-    let args = vec![
-        "--headless".to_string(),
-        "--convert-to".to_string(),
-        filter.to_string(),
-        "--outdir".to_string(),
-        output_dir_abs.to_string_lossy().to_string(),
-        input_abs.to_string_lossy().to_string(),
-    ];
-    
-    let result = run_command_with_job_id("soffice", &args, job_id, None);
-    
-    if result.is_ok() {
-        // LibreOffice creates output with input filename + new extension
-        let input_stem = input_path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("output");
-        
-        let libreoffice_output = output_dir_abs.join(format!("{}.{}", input_stem, filter));
-        
-        if !libreoffice_output.exists() {
-            return Err(format!(
-                "LibreOffice conversion completed but output file not found at: {}",
-                libreoffice_output.display()
-            ));
-        }
-        
-        if libreoffice_output != output_path {
-            std::fs::rename(&libreoffice_output, output)
-                .map_err(|e| format!("Failed to rename output file: {}", e))?;
-        }
-    }
-    
-    result.map(|_| output.to_string())
+
+    crate::engines::office::convert(input, output, filter, false, job_dir).map_err(|e| e.to_string())
 }
 
 fn convert_vector(
@@ -1140,33 +944,57 @@ fn convert_archive(
     
     std::fs::create_dir_all(&temp_dir)
         .map_err(|e| format!("Failed to create temp directory: {}", e))?;
-    
-    // Step 1: Extract the input archive to temp directory using 7-Zip
-    let extract_args = vec![
-        "x".to_string(),           // Extract with full paths
-        input.to_string(),
-        format!("-o{}", temp_dir.to_string_lossy()),
-        "-y".to_string(),          // Yes to all prompts
-    ];
-    
-    run_command_with_job_id("7z", &extract_args, job_id, None)
-        .map_err(|e| {
-            // Clean up temp directory on error
+
+    let input_ext = Path::new(input)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    // Step 1: Extract the input archive to temp directory. ZIP is handled
+    // natively (see native::archive_zip) - no external tool needed. Every
+    // other input format still goes through 7-Zip.
+    if input_ext == "zip" {
+        crate::native::archive_zip::extract_zip(Path::new(input), &temp_dir).map_err(|e| {
             let _ = std::fs::remove_dir_all(&temp_dir);
             format!("Failed to extract archive: {}", e)
         })?;
-    
-    // Step 2: Create the output archive in the target format
-    // Determine the 7-Zip format switch based on output format
+    } else {
+        let extract_args = vec![
+            "x".to_string(),           // Extract with full paths
+            input.to_string(),
+            format!("-o{}", temp_dir.to_string_lossy()),
+            "-y".to_string(),          // Yes to all prompts
+        ];
+
+        run_command_with_job_id("7z", &extract_args, job_id, None)
+            .map_err(|e| {
+                // Clean up temp directory on error
+                let _ = std::fs::remove_dir_all(&temp_dir);
+                format!("Failed to extract archive: {}", e)
+            })?;
+    }
+
+    // Step 2: Create the output archive in the target format. ZIP output
+    // is also handled natively; everything else still goes through 7-Zip.
+    if format == "zip" {
+        let result = crate::native::archive_zip::create_zip(&temp_dir, Path::new(output));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        result.map_err(|e| format!("Failed to create archive: {}", e))?;
+        return Ok(output.to_string());
+    }
+
     let archive_type = match format {
-        "zip" => "zip",
         "7z" => "7z",
         "tar" => "tar",
         "tar.gz" | "tgz" => "tgz",
         "tar.bz2" | "tbz2" => "tbz2",
-        _ => return Err(format!("Unsupported archive output format: {}", format)),
+        _ => {
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            return Err(format!("Unsupported archive output format: {}", format));
+        }
     };
-    
+
     // Build compression command
     // 7-Zip uses: 7z a -tzip output.zip source_dir/*
     let create_args = vec![
@@ -1176,14 +1004,14 @@ fn convert_archive(
         format!("{}{}*", temp_dir.to_string_lossy(), std::path::MAIN_SEPARATOR),
         "-y".to_string(),
     ];
-    
+
     let result = run_command_with_job_id("7z", &create_args, job_id, None);
-    
+
     // Clean up temp directory
     let _ = std::fs::remove_dir_all(&temp_dir);
-    
+
     result.map_err(|e| format!("Failed to create archive: {}", e))?;
-    
+
     Ok(output.to_string())
 }
 
@@ -1399,26 +1227,42 @@ fn run_command_with_job_id(cmd: &str, args: &[String], job_id: Option<&str>, dur
 
 // Additional conversion helpers
 
+/// Output format for the native pipeline is taken from `output`'s
+/// extension. `None` means the extension isn't one of the native formats
+/// (JPEG/PNG/WebP/BMP/GIF/TIFF), so the caller should fall back to
+/// ImageMagick.
+fn native_target_format(output: &str) -> Option<crate::native::image::NativeImageFormat> {
+    let ext = Path::new(output).extension().and_then(|e| e.to_str()).unwrap_or("");
+    crate::native::image::NativeImageFormat::from_extension(ext)
+}
+
 #[allow(dead_code)]
 pub fn resize_image_helper(
     input: &str,
     output: &str,
     options: &ImageOptions,
 ) -> Result<String, String> {
-    let mut args = vec![input.to_string()];
-    
-    if let (Some(w), Some(h)) = (options.width, options.height) {
-        args.push("-resize".to_string());
-        args.push(format!("{}x{}!", w, h));
+    use crate::native::image as native_image;
+
+    let w = options.width.ok_or("Width required")?;
+    let h = options.height.ok_or("Height required")?;
+
+    if let Some(target) = native_target_format(output) {
+        let quality = options.quality.map(|q| q.clamp(1, 100) as u8);
+        native_image::resize_file(Path::new(input), Path::new(output), target, w, h, quality)
+            .map_err(|e| e.to_string())?;
+        return Ok(output.to_string());
     }
-    
+
+    let mut args = vec![input.to_string()];
+    args.push("-resize".to_string());
+    args.push(format!("{}x{}!", w, h));
     if let Some(q) = options.quality {
         args.push("-quality".to_string());
         args.push(q.to_string());
     }
-    
     args.push(output.to_string());
-    
+
     run_command("magick", &args)?;
     Ok(output.to_string())
 }
@@ -1429,6 +1273,14 @@ pub fn compress_image_helper(
     output: &str,
     quality: u32,
 ) -> Result<String, String> {
+    use crate::native::image as native_image;
+
+    if let Some(target) = native_target_format(output) {
+        native_image::compress_file(Path::new(input), Path::new(output), target, quality.clamp(1, 100) as u8)
+            .map_err(|e| e.to_string())?;
+        return Ok(output.to_string());
+    }
+
     let args = vec![
         input.to_string(),
         "-quality".to_string(),
@@ -1436,7 +1288,7 @@ pub fn compress_image_helper(
         "-strip".to_string(),
         output.to_string(),
     ];
-    
+
     run_command("magick", &args)?;
     Ok(output.to_string())
 }
@@ -1447,11 +1299,19 @@ pub fn crop_image_helper(
     output: &str,
     options: &ImageOptions,
 ) -> Result<String, String> {
+    use crate::native::image as native_image;
+
     let x = options.crop_x.unwrap_or(0);
     let y = options.crop_y.unwrap_or(0);
     let w = options.crop_width.ok_or("Crop width required")?;
     let h = options.crop_height.ok_or("Crop height required")?;
-    
+
+    if let Some(target) = native_target_format(output) {
+        native_image::crop_file(Path::new(input), Path::new(output), target, x, y, w, h)
+            .map_err(|e| e.to_string())?;
+        return Ok(output.to_string());
+    }
+
     let args = vec![
         input.to_string(),
         "-crop".to_string(),
@@ -1459,7 +1319,7 @@ pub fn crop_image_helper(
         "+repage".to_string(),
         output.to_string(),
     ];
-    
+
     run_command("magick", &args)?;
     Ok(output.to_string())
 }
@@ -1470,13 +1330,21 @@ pub fn rotate_image_helper(
     output: &str,
     degrees: i32,
 ) -> Result<String, String> {
+    use crate::native::image as native_image;
+
+    if let Some(target) = native_target_format(output) {
+        native_image::rotate_file(Path::new(input), Path::new(output), target, degrees)
+            .map_err(|e| e.to_string())?;
+        return Ok(output.to_string());
+    }
+
     let args = vec![
         input.to_string(),
         "-rotate".to_string(),
         degrees.to_string(),
         output.to_string(),
     ];
-    
+
     run_command("magick", &args)?;
     Ok(output.to_string())
 }

@@ -7,6 +7,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useStore } from "../store/useStore";
 import type { FileInfo } from "../store/useStore";
 import { CATEGORIES } from "../types/formats";
+import { t } from "../locales";
 
 const categoryIcons: Record<string, React.ComponentType<{ className?: string }>> = {
   all: Upload,
@@ -46,7 +47,7 @@ export function FileDropZone() {
   const categoryData = CATEGORIES[activeCategory as keyof typeof CATEGORIES];
   const CategoryIcon = categoryIcons[activeCategory] || Upload;
   const categoryColor = categoryColors[activeCategory] || categoryColors.all;
-  const categoryName = categoryData?.name || "All Files";
+  const categoryName = t(`nav.${activeCategory}` as const) || categoryData?.name || t("nav.all");
   const categoryFormats = "formats" in categoryData ? (categoryData.formats as string[]) : null;
 
   // Listen for Tauri native drag events for visual feedback
@@ -197,7 +198,7 @@ export function FileDropZone() {
               >
                 <Sparkles className="w-12 h-12 text-white" />
               </motion.div>
-              <p className={`text-2xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r ${categoryColor}`}>Processing files...</p>
+              <p className={`text-2xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-r ${categoryColor}`}>{t("workflow.processingFiles")}</p>
             </motion.div>
           ) : isDragging ? (
             <motion.div
@@ -214,8 +215,8 @@ export function FileDropZone() {
               >
                 <FileUp className="w-12 h-12 text-white" />
               </motion.div>
-              <p className={`text-3xl font-extrabold mb-3 tracking-tight ${isDark ? "text-white" : "text-dark-900"}`}>Drop files here</p>
-              <p className={`text-lg font-medium ${isDark ? "text-dark-400" : "text-dark-500"}`}>Release space to initiate transfer</p>
+              <p className={`text-3xl font-extrabold mb-3 tracking-tight ${isDark ? "text-white" : "text-dark-900"}`}>{t("workflow.dropFilesHere")}</p>
+              <p className={`text-lg font-medium ${isDark ? "text-dark-400" : "text-dark-500"}`}>{t("workflow.releaseToTransfer")}</p>
             </motion.div>
           ) : (
             <motion.div
@@ -235,24 +236,24 @@ export function FileDropZone() {
                 <CategoryIcon className="w-12 h-12 text-white" />
               </motion.div>
               <h2 className={`text-3xl font-extrabold tracking-tight mb-4 ${isDark ? "text-white" : "text-dark-900"}`}>
-                {activeCategory === "all" 
-                  ? "Drag & Drop Files Here"
-                  : `Drop ${categoryName} Files`}
+                {activeCategory === "all"
+                  ? t("workflow.dragDropHeadline")
+                  : `${t("workflow.dropCategoryFiles")}: ${categoryName}`}
               </h2>
               <p className={`mb-10 max-w-lg text-lg ${isDark ? "text-dark-400" : "text-dark-500"}`}>
                 {activeCategory === "all" ? (
                   <>
-                    Seamlessly convert video, audio, images, documents, and 100+ formats without ever leaving your device.
+                    {t("workflow.allFormatsDescription")}
                   </>
                 ) : (
                   <>
                     {categoryFormats ? (
                       <>
-                        Hardware-accelerated local conversion for {categoryFormats.slice(0, 5).map(f => f.toUpperCase()).join(", ")}
-                        {categoryFormats.length > 5 && ` +${categoryFormats.length - 5} more.`}
+                        {t("workflow.hardwareAcceleratedFor")} {categoryFormats.slice(0, 5).map(f => f.toUpperCase()).join(", ")}
+                        {categoryFormats.length > 5 && ` +${categoryFormats.length - 5} ${t("workflow.moreFormats")}.`}
                       </>
                     ) : (
-                      "Secure, local conversion specifically tuned for your files."
+                      t("workflow.genericCategoryDescription")
                     )}
                   </>
                 )}
@@ -265,7 +266,7 @@ export function FileDropZone() {
                   whileTap={{ scale: 0.95 }}
                 >
                   <Upload className="w-5 h-5" />
-                  Browse {activeCategory === "all" ? "Files" : categoryName}
+                  {t("workflow.browse")} {activeCategory === "all" ? t("workflow.files") : categoryName}
                 </motion.button>
                 <motion.button
                   className={`px-6 py-4 rounded-xl font-semibold text-lg flex items-center gap-3 transition-colors glass-panel border ${
@@ -278,7 +279,7 @@ export function FileDropZone() {
                   whileTap={{ scale: 0.95 }}
                 >
                   <FolderOpen className="w-5 h-5" />
-                  Select Folder
+                  {t("workflow.selectFolder")}
                 </motion.button>
               </div>
             </motion.div>
@@ -300,19 +301,19 @@ export function FileDropZone() {
             <>
               <div className="flex items-center gap-2">
                 <span className="px-2 py-0.5 rounded-md bg-rose-500/20 text-[10px] text-rose-500 font-bold uppercase tracking-wider">
-                  Video
+                  {t("nav.video")}
                 </span>
                 <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 text-[10px] text-emerald-500 font-bold uppercase tracking-wider">
-                  Image
+                  {t("nav.image")}
                 </span>
                 <span className="px-2 py-0.5 rounded-md bg-blue-500/20 text-[10px] text-blue-500 font-bold uppercase tracking-wider">
-                  Doc
+                  {t("nav.document")}
                 </span>
                 <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-[10px] text-amber-500 font-bold uppercase tracking-wider">
-                  Audio
+                  {t("nav.audio")}
                 </span>
               </div>
-              <span className={`text-[11px] font-semibold tracking-wide ${isDark ? "text-dark-400" : "text-dark-500"}`}>100+ PLATFORM FORMATS</span>
+              <span className={`text-[11px] font-semibold tracking-wide ${isDark ? "text-dark-400" : "text-dark-500"}`}>{t("dropZone.platformFormats")}</span>
             </>
           ) : (
             <>
@@ -327,7 +328,7 @@ export function FileDropZone() {
                 ))}
               </div>
               <span className={`text-[11px] font-semibold tracking-wide ${isDark ? "text-dark-400" : "text-dark-500"}`}>
-                {categoryFormats?.length || 0} OPTIMIZED PRESETS
+                {categoryFormats?.length || 0} {t("dropZone.optimizedPresets")}
               </span>
             </>
           )}

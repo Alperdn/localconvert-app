@@ -9,7 +9,13 @@ import {
   Trash2,
   FileImage,
   Loader2,
+  CheckCircle2,
+  AlertTriangle,
+  Ban,
 } from "lucide-react";
+import { useStore } from "../store/useStore";
+import { t, translateCapabilityState, translateCapabilityCategory } from "../locales";
+import type { CapabilityState } from "../store/useStore";
 
 interface PrivacyStatus {
   network_dependent_conversion: boolean;
@@ -62,15 +68,29 @@ interface SystemStatusModalProps {
   isDark: boolean;
 }
 
+// Icon + tone for each backend CapabilityState (Step 3, section C/I). Never
+// exposes an executable path or raw engine name - only the Turkish label
+// from `translateCapabilityState` and the backend's own safe `message`.
+const CAPABILITY_ICON: Record<CapabilityState, React.ComponentType<{ className?: string }>> = {
+  AVAILABLE: CheckCircle2,
+  ENGINE_MISSING: AlertTriangle,
+  NOT_IMPLEMENTED: AlertTriangle,
+  DISABLED_BY_POLICY: Ban,
+};
+
 export function SystemStatusModal({ onClose, isDark }: SystemStatusModalProps) {
   const [status, setStatus] = useState<PrivacyStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const { capabilities, capabilitiesLoaded, loadCapabilities } = useStore();
 
   useEffect(() => {
     invoke<PrivacyStatus>("system_status")
       .then(setStatus)
       .catch((e) => setError(String(e)));
-  }, []);
+    if (!capabilitiesLoaded) {
+      loadCapabilities();
+    }
+  }, [capabilitiesLoaded, loadCapabilities]);
 
   return (
     <motion.div
@@ -95,7 +115,7 @@ export function SystemStatusModal({ onClose, isDark }: SystemStatusModalProps) {
           <div className="flex items-center gap-2">
             <ShieldCheck className="w-5 h-5 text-green-500" />
             <h2 className={`font-semibold ${isDark ? "text-white" : "text-dark-900"}`}>
-              Privacy &amp; System Status
+              {t("systemStatus.title")}
             </h2>
           </div>
           <button
@@ -117,7 +137,7 @@ export function SystemStatusModal({ onClose, isDark }: SystemStatusModalProps) {
 
           {error && (
             <p className="text-sm text-error-500 py-6">
-              Couldn't read system status: {error}
+              {t("systemStatus.couldNotRead")}: {error}
             </p>
           )}
 
@@ -125,61 +145,85 @@ export function SystemStatusModal({ onClose, isDark }: SystemStatusModalProps) {
             <>
               <StatusRow
                 icon={WifiOff}
-                label="Network-dependent conversion"
-                detail={status.network_dependent_conversion ? "Enabled" : "Disabled — every conversion runs locally"}
+                label={t("systemStatus.networkDependentConversion")}
+                detail={status.network_dependent_conversion ? t("systemStatus.networkDependentConversionOnDetail") : t("systemStatus.networkDependentConversionOffDetail")}
                 good={!status.network_dependent_conversion}
                 isDark={isDark}
               />
               <StatusRow
                 icon={ShieldCheck}
-                label="Telemetry"
-                detail={status.telemetry_enabled ? "Enabled" : "Disabled — nothing is sent about your usage"}
+                label={t("systemStatus.telemetry")}
+                detail={status.telemetry_enabled ? t("systemStatus.telemetryOnDetail") : t("systemStatus.telemetryOffDetail")}
                 good={!status.telemetry_enabled}
                 isDark={isDark}
               />
               <StatusRow
                 icon={ShieldCheck}
-                label="Analytics"
-                detail={status.analytics_enabled ? "Enabled" : "Disabled"}
+                label={t("systemStatus.analytics")}
+                detail={status.analytics_enabled ? t("systemStatus.analyticsOnDetail") : t("systemStatus.analyticsOffDetail")}
                 good={!status.analytics_enabled}
                 isDark={isDark}
               />
               <StatusRow
                 icon={ShieldCheck}
-                label="Automatic updates"
-                detail={status.automatic_updates_enabled ? "Enabled" : "Disabled — nothing installs itself"}
+                label={t("systemStatus.automaticUpdates")}
+                detail={status.automatic_updates_enabled ? t("systemStatus.automaticUpdatesOnDetail") : t("systemStatus.automaticUpdatesOffDetail")}
                 good={!status.automatic_updates_enabled}
                 isDark={isDark}
               />
               <StatusRow
                 icon={History}
-                label="Conversion history"
-                detail={status.conversion_history_enabled ? "Enabled" : "Disabled — filenames and paths are not logged"}
+                label={t("systemStatus.conversionHistory")}
+                detail={status.conversion_history_enabled ? t("systemStatus.conversionHistoryOnDetail") : t("systemStatus.conversionHistoryOffDetail")}
                 good={!status.conversion_history_enabled}
                 isDark={isDark}
               />
               <StatusRow
                 icon={Trash2}
-                label="Temporary file cleanup"
-                detail={status.temp_cleanup_enabled ? "Enabled — per-job working files are removed automatically" : "Disabled"}
+                label={t("systemStatus.tempCleanupLabel")}
+                detail={status.temp_cleanup_enabled ? t("systemStatus.tempCleanupOnDetail") : t("systemStatus.tempCleanupOffDetail")}
                 good={status.temp_cleanup_enabled}
                 isDark={isDark}
               />
               <StatusRow
                 icon={FileImage}
-                label="Metadata removal (images)"
+                label={t("systemStatus.metadataRemoval")}
                 detail={
                   status.metadata_removal_default_for_images
-                    ? "Enabled by default for image conversions. Video, document and PDF conversions don't have a metadata-stripping step yet."
-                    : "Disabled"
+                    ? t("systemStatus.metadataRemovalOnDetail")
+                    : t("systemStatus.metadataRemovalOffDetail")
                 }
                 good={status.metadata_removal_default_for_images}
                 isDark={isDark}
               />
 
+              {/* Capability / feature status (Step 3, section C/I) - backend
+                  is the sole source of truth; this only renders the Turkish
+                  label + safe message, never a path or engine name. */}
+              {capabilities.length > 0 && (
+                <div className="pt-3">
+                  <p className={`text-[11px] font-bold uppercase tracking-widest mb-2 ${isDark ? "text-dark-500" : "text-dark-400"}`}>
+                    {t("systemStatus.capabilitiesTitle")}
+                  </p>
+                  {capabilities.map((cap) => {
+                    const Icon = CAPABILITY_ICON[cap.state] ?? AlertTriangle;
+                    const good = cap.state === "AVAILABLE";
+                    return (
+                      <StatusRow
+                        key={cap.id}
+                        icon={Icon}
+                        label={translateCapabilityCategory(cap.id)}
+                        detail={translateCapabilityState(cap.state)}
+                        good={good}
+                        isDark={isDark}
+                      />
+                    );
+                  })}
+                </div>
+              )}
+
               <p className={`text-[11px] pt-3 pb-1 ${isDark ? "text-dark-500" : "text-dark-400"}`}>
-                LocalConvert v{status.app_version} · These reflect what this build's code
-                actually does, not a general promise.
+                LocalConvert v{status.app_version} · {t("systemStatus.footerNote")}
               </p>
             </>
           )}

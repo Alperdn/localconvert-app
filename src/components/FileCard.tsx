@@ -29,7 +29,9 @@ import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import toast from "react-hot-toast";
 import { useStore, ConversionFile } from "../store/useStore";
+import { t, describeUnavailableCapability, translateErrorCode } from "../locales";
 import { formatFileSize, getOutputFormats } from "../types/formats";
+import { capabilityIdForOutputFormat, isCapabilityUsable } from "../utils/capabilityGating";
 
 // Format time in seconds to a human-readable string
 function formatETA(seconds: number | null): string {
@@ -116,6 +118,7 @@ export function FileCard({ file }: FileCardProps) {
     setPreviewImageId,
     openPdfEditor,
     openVideoTrimmer,
+    getCapability,
   } = useStore();
   const [showFormats, setShowFormats] = useState(false);
   const [imageError, setImageError] = useState(false);
@@ -142,7 +145,7 @@ export function FileCard({ file }: FileCardProps) {
     try {
       await invoke("open_file_location", { path });
     } catch (error) {
-      toast.error("Failed to open file location");
+      toast.error(t("workflow.failedToOpenFileLocation"));
       console.error(error);
     }
   };
@@ -152,6 +155,21 @@ export function FileCard({ file }: FileCardProps) {
   const borderHoverClass = borderHoverColorMap[file.category] || "group-hover:border-dark-500";
   const isSelected = selectedFiles.includes(file.id);
   const outputFormats = getOutputFormats(file.extension);
+
+  // Feature Availability Behavior (Step 3, section D/F): video trimming
+  // depends on FFmpeg, which is not bundled yet in this build. Gate the
+  // Trim entry point itself so the user never opens the trimmer only to
+  // have the eventual conversion fail.
+  const videoTrimCapability = file.category === "video" ? getCapability("video_trimming") : undefined;
+  const videoTrimBlocked = file.category === "video" && !isCapabilityUsable(videoTrimCapability);
+
+  const handleOpenVideoTrimmer = () => {
+    if (videoTrimBlocked && videoTrimCapability) {
+      toast.error(describeUnavailableCapability(videoTrimCapability));
+      return;
+    }
+    openVideoTrimmer(file.path, file.name, file.id);
+  };
 
   const handleToggleSelect = () => {
     if (isSelected) {
@@ -164,6 +182,16 @@ export function FileCard({ file }: FileCardProps) {
   const handleSelectFormat = (format: string) => {
     setFileOutputFormat(file.id, format);
     setShowFormats(false);
+  };
+
+  // Feature Availability Behavior (Step 3, section H): don't let a user
+  // pick an output format that would predictably fail (e.g. AVIF/HEIC
+  // without ImageMagick bundled) - grey it out with an explanation instead
+  // of only finding out after conversion fails.
+  const isFormatBlocked = (format: string) => {
+    const capId = capabilityIdForOutputFormat(format);
+    if (!capId) return false;
+    return !isCapabilityUsable(getCapability(capId));
   };
 
   const getStatusIcon = () => {
@@ -273,7 +301,7 @@ export function FileCard({ file }: FileCardProps) {
               if (file.category === "image" && file.previewUrl) {
                 setPreviewImageId(file.id);
               } else if (file.category === "video") {
-                openVideoTrimmer(file.path, file.name, file.id);
+                handleOpenVideoTrimmer();
               }
             }}
           >
@@ -337,7 +365,7 @@ export function FileCard({ file }: FileCardProps) {
                   whileHover={{ scale: 1.05 }}
                 >
                   <FolderOpen className="w-3.5 h-3.5" />
-                  OPEN
+                  {t("conversion.open")}
                 </motion.button>
               </>
             )}
@@ -359,9 +387,9 @@ export function FileCard({ file }: FileCardProps) {
             )}
           </div>
           {file.error && (
-            <p className="text-[11px] font-bold text-error-500 mt-1.5 truncate flex items-center gap-1 bg-error-500/10 px-2 py-0.5 rounded-md inline-flex w-fit max-w-full" title={file.error}>
+            <p className="text-[11px] font-bold text-error-500 mt-1.5 truncate flex items-center gap-1 bg-error-500/10 px-2 py-0.5 rounded-md inline-flex w-fit max-w-full" title={translateErrorCode(file.error)}>
               <AlertCircle className="w-3 h-3 shrink-0" />
-              {file.error}
+              {translateErrorCode(file.error)}
             </p>
           )}
         </div>
@@ -379,28 +407,36 @@ export function FileCard({ file }: FileCardProps) {
               onClick={() => openPdfEditor(file.path, file.name)}
               whileHover={{ scale: 1.05, y: -2 }}
               whileTap={{ scale: 0.95 }}
-              title="Edit PDF"
+              title={t("workflow.editPdf")}
             >
               <Edit3 className="w-4 h-4" />
-              <span className="text-[11px] font-bold uppercase tracking-wider">Edit</span>
+              <span className="text-[11px] font-bold uppercase tracking-wider">{t("workflow.edit")}</span>
             </motion.button>
           )}
 
-          {/* Trim button for video files */}
+          {/* Trim button for video files - visibly disabled (not hidden)
+              when the video engine isn't available, per Feature
+              Availability Behavior (ENGINE_MISSING stays visible but
+              disabled with an explanation, section D/F). */}
           {file.category === "video" && file.status === "pending" && (
             <motion.button
               className={`flex items-center gap-1.5 px-3 py-2 rounded-xl transition-all border ${
-                isDark
-                  ? "bg-rose-500/10 border-rose-500/20 text-rose-500 hover:bg-rose-500/20 hover:border-rose-500/30"
-                  : "bg-rose-50 border-rose-200/50 text-rose-600 hover:bg-rose-100"
+                videoTrimBlocked
+                  ? isDark
+                    ? "bg-dark-800 border-dark-700 text-dark-500 cursor-not-allowed opacity-60"
+                    : "bg-dark-50 border-dark-200 text-dark-400 cursor-not-allowed opacity-60"
+                  : isDark
+                    ? "bg-rose-500/10 border-rose-500/20 text-rose-500 hover:bg-rose-500/20 hover:border-rose-500/30"
+                    : "bg-rose-50 border-rose-200/50 text-rose-600 hover:bg-rose-100"
               }`}
-              onClick={() => openVideoTrimmer(file.path, file.name, file.id)}
-              whileHover={{ scale: 1.05, y: -2 }}
-              whileTap={{ scale: 0.95 }}
-              title="Trim Video"
+              onClick={handleOpenVideoTrimmer}
+              disabled={videoTrimBlocked}
+              whileHover={videoTrimBlocked ? {} : { scale: 1.05, y: -2 }}
+              whileTap={videoTrimBlocked ? {} : { scale: 0.95 }}
+              title={videoTrimBlocked && videoTrimCapability ? describeUnavailableCapability(videoTrimCapability) : t("workflow.trimVideo")}
             >
               <Scissors className="w-4 h-4" />
-              <span className="text-[11px] font-bold uppercase tracking-wider">Trim</span>
+              <span className="text-[11px] font-bold uppercase tracking-wider">{t("workflow.trim")}</span>
             </motion.button>
           )}
 
@@ -418,7 +454,7 @@ export function FileCard({ file }: FileCardProps) {
             disabled={file.status === "converting" || file.status === "completed"}
           >
             <span className="uppercase text-xs font-bold tracking-widest min-w-[50px] text-center">
-              {currentFormat || "FORMAT"}
+              {currentFormat || t("conversion.formatPlaceholder")}
             </span>
             <ChevronDown
               className={`w-4 h-4 transition-transform ${showFormats ? "rotate-180" : ""}`}
@@ -439,27 +475,35 @@ export function FileCard({ file }: FileCardProps) {
               <div className="p-2 max-h-64 overflow-y-auto custom-scrollbar">
                 {outputFormats.length > 0 ? (
                   <div className="flex flex-col gap-1">
-                    {outputFormats.map((format) => (
-                      <motion.button
-                        key={format}
-                        className={`w-full text-left px-4 py-2.5 rounded-xl text-xs font-bold uppercase tracking-widest transition-colors flex justify-between items-center ${
-                          currentFormat === format
-                            ? "bg-brand/20 text-brand"
-                            : isDark
-                              ? "text-dark-300 hover:bg-dark-700/50 hover:text-white"
-                              : "text-dark-600 hover:bg-dark-100 hover:text-dark-900"
-                        }`}
-                        onClick={() => handleSelectFormat(format)}
-                        whileHover={{ x: 4 }}
-                      >
-                        {format}
-                        {currentFormat === format && <Check className="w-3.5 h-3.5" />}
-                      </motion.button>
-                    ))}
+                    {outputFormats.map((format) => {
+                      const blocked = isFormatBlocked(format);
+                      return (
+                        <motion.button
+                          key={format}
+                          className={`w-full text-left px-4 py-2.5 rounded-xl text-xs font-bold uppercase tracking-widest transition-colors flex justify-between items-center ${
+                            blocked
+                              ? isDark
+                                ? "text-dark-600 cursor-not-allowed opacity-50"
+                                : "text-dark-300 cursor-not-allowed opacity-50"
+                              : currentFormat === format
+                                ? "bg-brand/20 text-brand"
+                                : isDark
+                                  ? "text-dark-300 hover:bg-dark-700/50 hover:text-white"
+                                  : "text-dark-600 hover:bg-dark-100 hover:text-dark-900"
+                          }`}
+                          onClick={() => !blocked && handleSelectFormat(format)}
+                          whileHover={blocked ? {} : { x: 4 }}
+                          title={blocked ? t("workflow.engineMissingShort") : undefined}
+                        >
+                          {format}
+                          {currentFormat === format && !blocked && <Check className="w-3.5 h-3.5" />}
+                        </motion.button>
+                      );
+                    })}
                   </div>
                 ) : (
                   <p className={`px-3 py-2 text-xs font-bold text-center ${isDark ? "text-dark-500" : "text-dark-400"}`}>
-                    No formats available
+                    {t("conversion.noFormatsAvailable")}
                   </p>
                 )}
               </div>
@@ -481,7 +525,7 @@ export function FileCard({ file }: FileCardProps) {
           whileHover={{ scale: 1.15, rotate: 90 }}
           whileTap={{ scale: 0.85 }}
           disabled={file.status === "converting"}
-          title="Remove File"
+          title={t("workflow.removeFile")}
         >
           <X className="w-5 h-5" />
         </motion.button>

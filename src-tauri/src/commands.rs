@@ -6,7 +6,7 @@ use crate::converter::{
 use crate::security;
 use crate::tools::{
     check_tool_installed, detect_gpu_encoders, get_category_for_extension,
-    get_supported_output_formats, get_tool_download_url, get_tool_path, TOOLS,
+    get_supported_output_formats, get_tool_path, TOOLS,
 };
 use crate::types::{
     ConversionOptions, ConversionResult, FileInfo, FormatInfo, GpuInfo,
@@ -38,18 +38,6 @@ pub async fn check_tools() -> Vec<ToolStatus> {
         .iter()
         .map(|(cmd, _, _)| check_tool_installed(cmd))
         .collect()
-}
-
-#[tauri::command]
-pub async fn download_tool(tool_name: String) -> Result<String, String> {
-    let url = get_tool_download_url(&tool_name)
-        .ok_or_else(|| format!("No download URL for {}", tool_name))?;
-    
-    // Open the download URL in the default browser
-    // The user will need to install manually for now
-    open::that(url).map_err(|e| format!("Failed to open download page: {}", e))?;
-    
-    Ok(format!("Opening download page for {}...", tool_name))
 }
 
 #[tauri::command]
@@ -748,10 +736,33 @@ pub async fn get_image_preview(path: String, max_size: Option<u32>) -> Result<St
         _ => return Err("Unsupported image format".to_string()),
     };
     
-    // For large images, create a thumbnail using ImageMagick if available
+    // Common raster formats get a bounds-checked native thumbnail (no
+    // subprocess, no decompression-bomb risk - see native::image). Formats
+    // the native pipeline doesn't decode (SVG, ICO, AVIF, ...) fall back to
+    // ImageMagick if available, then to the raw file under a size cap.
     let max_dimension = max_size.unwrap_or(200);
+
+    if crate::native::image::NativeImageFormat::is_native(&extension) {
+        let thumb = crate::native::image::thumbnail(file_path, max_dimension).map_err(|e| e.to_string())?;
+        let bytes = crate::native::image::encode::encode_to_bytes(
+            &thumb,
+            crate::native::image::NativeImageFormat::Jpeg,
+            &crate::native::image::encode::EncodeOptions {
+                quality: Some(80),
+                png_compression_level: None,
+            },
+        )
+        .map_err(|e| e.to_string())?;
+
+        use std::fmt::Write;
+        let base64 = base64_encode(&bytes);
+        let mut data_url = String::with_capacity(base64.len() + 30);
+        write!(data_url, "data:image/jpeg;base64,{}", base64).map_err(|e| e.to_string())?;
+        return Ok(data_url);
+    }
+
     let temp_path = std::env::temp_dir().join(format!("preview_{}.jpg", uuid::Uuid::new_v4()));
-    
+
     // Try to create a thumbnail
     let thumbnail_result = hidden_command(&get_tool_path("magick"))
         .args([
@@ -763,7 +774,7 @@ pub async fn get_image_preview(path: String, max_size: Option<u32>) -> Result<St
             temp_path.to_string_lossy().as_ref(),
         ])
         .output();
-    
+
     let (data, content_type) = if thumbnail_result.is_ok() && temp_path.exists() {
         // Read the thumbnail
         let mut file = fs::File::open(&temp_path).map_err(|e| e.to_string())?;
@@ -777,7 +788,7 @@ pub async fn get_image_preview(path: String, max_size: Option<u32>) -> Result<St
         if metadata.len() > 5 * 1024 * 1024 {
             return Err("Image too large for preview without ImageMagick".to_string());
         }
-        
+
         let mut file = fs::File::open(&path).map_err(|e| e.to_string())?;
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer).map_err(|e| e.to_string())?;
@@ -1014,14 +1025,9 @@ pub async fn get_video_duration(path: String) -> Result<f64, String> {
     let canonical = security::path_validation::validate_input_file(&path)?;
     let path = canonical.to_string_lossy().to_string();
 
-    let ffmpeg_path = get_tool_path("ffmpeg");
-    let ffprobe_path = if cfg!(windows) {
-        ffmpeg_path.replace("ffmpeg.exe", "ffprobe.exe")
-    } else {
-        ffmpeg_path.replace("ffmpeg", "ffprobe")
-    };
+    let ffprobe = crate::engines::resolver::resolve(crate::engines::EngineId::Ffprobe)?;
 
-    let output = hidden_command(&ffprobe_path)
+    let output = hidden_command(&ffprobe.path.to_string_lossy())
         .args([
             "-v", "quiet",
             "-print_format", "json",
@@ -1096,14 +1102,9 @@ pub async fn get_video_metadata(path: String) -> Result<crate::types::VideoMetad
     let canonical = security::path_validation::validate_input_file(&path)?;
     let path = canonical.to_string_lossy().to_string();
 
-    let ffmpeg_path = get_tool_path("ffmpeg");
-    let ffprobe_path = if cfg!(windows) {
-        ffmpeg_path.replace("ffmpeg.exe", "ffprobe.exe")
-    } else {
-        ffmpeg_path.replace("ffmpeg", "ffprobe")
-    };
+    let ffprobe = crate::engines::resolver::resolve(crate::engines::EngineId::Ffprobe)?;
 
-    let output = hidden_command(&ffprobe_path)
+    let output = hidden_command(&ffprobe.path.to_string_lossy())
         .args([
             "-v", "quiet",
             "-print_format", "json",

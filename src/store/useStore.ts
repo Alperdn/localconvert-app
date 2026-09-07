@@ -25,6 +25,22 @@ export interface ToolStatus {
   path: string | null;
 }
 
+// Mirrors src-tauri/src/capabilities.rs `CapabilityState` (SCREAMING_SNAKE_CASE
+// over the wire via serde). The frontend never computes this itself - it is
+// always backend-reported, so a capability flipping to AVAILABLE (e.g. once
+// Office/FFmpeg are bundled) requires no frontend change.
+export type CapabilityState =
+  | "AVAILABLE"
+  | "ENGINE_MISSING"
+  | "NOT_IMPLEMENTED"
+  | "DISABLED_BY_POLICY";
+
+export interface Capability {
+  id: string;
+  state: CapabilityState;
+  message: string;
+}
+
 export interface FileInfo {
   path: string;
   name: string;
@@ -410,7 +426,14 @@ interface Store {
   tools: ToolStatus[];
   toolsChecked: boolean;
   checkTools: () => Promise<void>;
-  downloadTool: (name: string) => Promise<void>;
+
+  // Capabilities (backend-computed feature availability - see
+  // src-tauri/src/capabilities.rs). Source of truth lives in Rust; the
+  // frontend only renders it.
+  capabilities: Capability[];
+  capabilitiesLoaded: boolean;
+  loadCapabilities: () => Promise<void>;
+  getCapability: (id: string) => Capability | undefined;
 
   // GPU
   gpuInfo: GpuInfo | null;
@@ -609,14 +632,21 @@ export const useStore = create<Store>((set, get) => ({
     }
   },
 
-  downloadTool: async (name) => {
+  // Capabilities
+  capabilities: [],
+  capabilitiesLoaded: false,
+
+  loadCapabilities: async () => {
     try {
-      await invoke("download_tool", { toolName: name });
+      const capabilities = await invoke<Capability[]>("get_capabilities");
+      set({ capabilities, capabilitiesLoaded: true });
     } catch (error) {
-      console.error(`Failed to download ${name}:`, error);
-      throw error;
+      console.error("Failed to load capabilities:", error);
+      set({ capabilitiesLoaded: true });
     }
   },
+
+  getCapability: (id) => get().capabilities.find((c) => c.id === id),
 
   // GPU
   gpuInfo: null,
@@ -733,7 +763,7 @@ export const useStore = create<Store>((set, get) => ({
         if (result.success) {
           setFileStatus(file.id, "completed", 100, undefined, result.output_path ?? undefined, null, null);
         } else {
-          setFileStatus(file.id, "error", 0, result.error ?? "Conversion failed", undefined, null, null);
+          setFileStatus(file.id, "error", 0, result.error ?? "PROCESS_FAILED", undefined, null, null);
         }
       } catch (error) {
         const errorStr = String(error);

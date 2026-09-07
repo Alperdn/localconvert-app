@@ -17,6 +17,7 @@ import {
   MessageCircle,
 } from "lucide-react";
 import { useStore, CONVERSION_PRESETS, DEVICE_PRESETS, ConversionPreset } from "../store/useStore";
+import { t } from "../locales";
 
 interface PresetsSelectorProps {
   category: string;
@@ -79,7 +80,7 @@ export function PresetsSelector({ category, onSelectPreset }: PresetsSelectorPro
       >
         <span className={`flex items-center gap-2 text-sm ${isDark ? "text-dark-300" : "text-gray-600"}`}>
           <Sparkles className="w-4 h-4 text-amber-500" />
-          Quick Presets
+          {t("presets.quickPresets")}
         </span>
         <ChevronDown
           className={`w-4 h-4 transition-transform ${isDark ? "text-dark-400" : "text-gray-500"} ${
@@ -120,7 +121,7 @@ export function PresetsSelector({ category, onSelectPreset }: PresetsSelectorPro
                   }`}
                   onClick={() => setActiveTab("presets")}
                 >
-                  Presets
+                  {t("presets.presets")}
                 </button>
                 <button
                   className={`flex-1 px-4 py-2 text-sm font-medium transition-colors ${
@@ -134,7 +135,7 @@ export function PresetsSelector({ category, onSelectPreset }: PresetsSelectorPro
                   }`}
                   onClick={() => setActiveTab("devices")}
                 >
-                  Devices
+                  {t("presets.devices")}
                 </button>
               </div>
 
@@ -180,7 +181,7 @@ export function PresetsSelector({ category, onSelectPreset }: PresetsSelectorPro
                     </div>
                   ) : (
                     <p className={`text-sm text-center py-4 ${isDark ? "text-dark-400" : "text-gray-500"}`}>
-                      No presets for this file type
+                      {t("presets.noPresets")}
                     </p>
                   )
                 ) : (
@@ -223,7 +224,7 @@ export function PresetsSelector({ category, onSelectPreset }: PresetsSelectorPro
                     </div>
                   ) : (
                     <p className={`text-sm text-center py-4 ${isDark ? "text-dark-400" : "text-gray-500"}`}>
-                      No device presets for this file type
+                      {t("presets.noDevicePresets")}
                     </p>
                   )
                 )}

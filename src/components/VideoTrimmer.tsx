@@ -14,6 +14,7 @@ import {
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import toast from "react-hot-toast";
 import { useStore } from "../store/useStore";
+import { t, describeUnavailableCapability } from "../locales";
 
 // Video output formats
 const VIDEO_OUTPUT_FORMATS = ["mp4", "mkv", "webm", "avi", "mov", "gif"];
@@ -25,8 +26,15 @@ interface VideoTrimmerProps {
 }
 
 export function VideoTrimmer({ filePath, onClose, onTrim }: VideoTrimmerProps) {
-  const { settings } = useStore();
+  const { settings, getCapability } = useStore();
   const isDark = settings.theme === "dark";
+
+  // Defense in depth (Step 3, section F): FileCard already gates opening
+  // the trimmer when video_trimming is unavailable, but re-check here too
+  // so nothing can reach a real trim/spawn even if this component were
+  // ever opened from another entry point.
+  const videoTrimCapability = getCapability("video_trimming");
+  const videoTrimBlocked = videoTrimCapability ? videoTrimCapability.state !== "AVAILABLE" : false;
   
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
@@ -143,8 +151,12 @@ export function VideoTrimmer({ filePath, onClose, onTrim }: VideoTrimmerProps) {
   };
 
   const handleTrim = () => {
+    if (videoTrimBlocked && videoTrimCapability) {
+      toast.error(describeUnavailableCapability(videoTrimCapability));
+      return;
+    }
     if (endTime - startTime < 0.1) {
-      toast.error("Selection too short");
+      toast.error(t("videoTrimmer.selectionTooShort"));
       return;
     }
     onTrim(startTime, endTime, outputFormat);
@@ -181,7 +193,7 @@ export function VideoTrimmer({ filePath, onClose, onTrim }: VideoTrimmerProps) {
         <div className="flex items-center justify-between p-4 border-b border-dark-700">
           <div className="flex items-center gap-3">
             <Scissors className="w-5 h-5 text-accent-500" />
-            <h2 className="text-lg font-semibold text-white">Trim Video</h2>
+            <h2 className="text-lg font-semibold text-white">{t("workflow.trimVideo")}</h2>
           </div>
           <motion.button
             className="p-2 rounded-lg hover:bg-dark-700 text-dark-400 hover:text-white"
@@ -229,6 +241,14 @@ export function VideoTrimmer({ filePath, onClose, onTrim }: VideoTrimmerProps) {
             </motion.button>
           </div>
         </div>
+
+        {/* Unavailable banner (Step 3, section F) - shown before any trim
+            action is attempted, never as a failed-spawn surprise. */}
+        {videoTrimBlocked && videoTrimCapability && (
+          <div className="mx-4 mt-4 p-3 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400 text-sm">
+            {describeUnavailableCapability(videoTrimCapability)}
+          </div>
+        )}
 
         {/* Timeline */}
         <div className="p-4 space-y-4">
@@ -305,20 +325,20 @@ export function VideoTrimmer({ filePath, onClose, onTrim }: VideoTrimmerProps) {
           <div className="flex items-center justify-between text-sm">
             <div className="flex items-center gap-4">
               <div>
-                <span className="text-dark-400">Start: </span>
+                <span className="text-dark-400">{t("videoTrimmer.start")}: </span>
                 <span className="text-white font-mono">{formatTime(startTime)}</span>
               </div>
               <div>
-                <span className="text-dark-400">End: </span>
+                <span className="text-dark-400">{t("videoTrimmer.end")}: </span>
                 <span className="text-white font-mono">{formatTime(endTime)}</span>
               </div>
               <div>
-                <span className="text-dark-400">Duration: </span>
+                <span className="text-dark-400">{t("videoTrimmer.duration")}: </span>
                 <span className="text-accent-500 font-mono">{formatTime(selectedDuration)}</span>
               </div>
             </div>
             <div className="text-dark-400">
-              Total: {formatTime(duration)}
+              {t("videoTrimmer.total")}: {formatTime(duration)}
             </div>
           </div>
         </div>
@@ -333,7 +353,7 @@ export function VideoTrimmer({ filePath, onClose, onTrim }: VideoTrimmerProps) {
               whileTap={{ scale: 0.98 }}
             >
               <RotateCcw className="w-4 h-4" />
-              Reset
+              {t("videoTrimmer.reset")}
             </motion.button>
 
             {/* Output Format Selector */}
@@ -391,16 +411,20 @@ export function VideoTrimmer({ filePath, onClose, onTrim }: VideoTrimmerProps) {
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
             >
-              Cancel
+              {t("workflow.cancel")}
             </motion.button>
             <motion.button
-              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent-gradient text-white font-medium"
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium ${
+                videoTrimBlocked ? "bg-dark-700 text-dark-500 cursor-not-allowed" : "bg-accent-gradient text-white"
+              }`}
               onClick={handleTrim}
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
+              disabled={videoTrimBlocked}
+              whileHover={videoTrimBlocked ? {} : { scale: 1.02 }}
+              whileTap={videoTrimBlocked ? {} : { scale: 0.98 }}
+              title={videoTrimBlocked && videoTrimCapability ? describeUnavailableCapability(videoTrimCapability) : undefined}
             >
               <Check className="w-4 h-4" />
-              Apply Trim
+              {t("videoTrimmer.applyTrim")}
             </motion.button>
           </div>
         </div>

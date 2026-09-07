@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "../store/useStore";
 import { FileCard } from "./FileCard";
 import type { FileInfo, ConversionFile } from "../store/useStore";
+import { t } from "../locales";
 
 export function FileList() {
   const {
@@ -86,12 +87,12 @@ export function FileList() {
             <Layers className="w-4 h-4" />
           </div>
           <h2 className={`text-[15px] font-bold tracking-wide uppercase ${isDark ? "text-white" : "text-dark-900"}`}>
-            {activeCategory === "all" ? "All Queue" : `${activeCategory} Queue`}
+            {activeCategory === "all" ? t("nav.all") : t(`nav.${activeCategory}` as const)}
           </h2>
           <span className={`ml-2 px-2.5 py-0.5 rounded-full text-[11px] font-bold tracking-widest ${
             isDark ? "bg-dark-800 text-dark-400 border border-dark-700" : "bg-white text-dark-500 border border-dark-100 shadow-sm"
           }`}>
-            {filteredFiles.length} ITEM{filteredFiles.length !== 1 ? "S" : ""}
+            {filteredFiles.length} {filteredFiles.length !== 1 ? t("conversion.itemPlural") : t("conversion.itemSingular")}
           </span>
         </div>
         <div className="flex items-center gap-2">
@@ -111,7 +112,7 @@ export function FileList() {
             ) : (
               <Square className="w-3.5 h-3.5" />
             )}
-            {allSelected ? "DESELECT" : "SELECT ALL"}
+            {allSelected ? t("fileList.deselect") : t("fileList.selectAll")}
           </motion.button>
           
           <div className={`w-px h-6 mx-1 ${isDark ? "bg-dark-700/50" : "bg-dark-200/50"}`}></div>
@@ -127,7 +128,7 @@ export function FileList() {
             whileTap={{ scale: 0.98 }}
           >
             <Plus className="w-3.5 h-3.5" />
-            ADD
+            {t("fileList.add")}
           </motion.button>
           <motion.button
             className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${
@@ -141,7 +142,7 @@ export function FileList() {
             disabled={filteredFiles.length === 0}
           >
             <Trash2 className="w-3.5 h-3.5" />
-            CLEAR
+            {t("conversion.clear")}
           </motion.button>
         </div>
       </div>
@@ -155,9 +156,11 @@ export function FileList() {
             }`}>
               <Upload className={`w-10 h-10 ${isDark ? "text-dark-500" : "text-dark-400"}`} />
             </div>
-            <p className={`text-lg font-bold tracking-wide ${isDark ? "text-dark-400" : "text-dark-500"}`}>Queue is empty</p>
+            <p className={`text-lg font-bold tracking-wide ${isDark ? "text-dark-400" : "text-dark-500"}`}>{t("fileList.queueEmpty")}</p>
             <p className={`text-sm mt-2 ${isDark ? "text-dark-500" : "text-dark-400"}`}>
-              {activeCategory === "all" ? "Add files to start converting" : `Add ${activeCategory} files to begin`}
+              {activeCategory === "all"
+                ? t("fileList.addFilesToStart")
+                : `${t("fileList.addCategoryFiles")} ${t(`nav.${activeCategory}` as const)}`}
             </p>
           </div>
         ) : (
@@ -210,7 +213,7 @@ export function FileList() {
           >
             <p className="text-[10px] font-bold uppercase tracking-widest flex items-center justify-center gap-2">
               <GripVertical className="w-3 h-3" />
-              Drag files to reorder priority
+              {t("fileList.dragToReorder")}
             </p>
           </motion.div>
         )}

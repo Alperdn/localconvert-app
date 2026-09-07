@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useStore, Category } from "../store/useStore";
 import { CATEGORIES } from "../types/formats";
+import { t } from "../locales";
 
 const iconMap: Record<string, React.ComponentType<{ className?: string }>> = {
   Files,
@@ -46,7 +47,7 @@ export function Sidebar() {
         <h2 className={`text-xs font-bold uppercase tracking-widest mb-4 pl-2 ${
           isDark ? "text-dark-500" : "text-dark-400"
         }`}>
-          Categories
+          {t("nav.categories")}
         </h2>
         <nav className="space-y-1.5 relative">
           {categories.map(([key, data]) => {
@@ -77,7 +78,7 @@ export function Sidebar() {
                 )}
                 
                 <Icon className={`w-4 h-4 z-10 ${isActive ? "text-white" : data.color}`} />
-                <span className="flex-1 text-left z-10">{data.name}</span>
+                <span className="flex-1 text-left z-10">{t(`nav.${key}`)}</span>
                 
                 {count > 0 && (
                   <span
@@ -103,20 +104,20 @@ export function Sidebar() {
         <div className={`rounded-xl p-4 backdrop-blur-md border ${
           isDark ? "bg-dark-800/40 border-dark-700/50" : "bg-white/40 border-dark-100"
         }`}>
-          <p className={`text-[10px] font-bold uppercase tracking-widest mb-3 ${isDark ? "text-dark-500" : "text-dark-400"}`}>Session Stats</p>
+          <p className={`text-[10px] font-bold uppercase tracking-widest mb-3 ${isDark ? "text-dark-500" : "text-dark-400"}`}>{t("sidebar.sessionStats")}</p>
           <div className="space-y-2">
             <div className="flex justify-between items-center text-sm">
-              <span className={isDark ? "text-dark-400" : "text-dark-500"}>Files</span>
+              <span className={isDark ? "text-dark-400" : "text-dark-500"}>{t("sidebar.files")}</span>
               <span className={`font-semibold bg-dark-100/50 dark:bg-dark-800/50 px-2 py-0.5 rounded-md ${isDark ? "text-white" : "text-dark-900"}`}>{files.length}</span>
             </div>
             <div className="flex justify-between items-center text-sm">
-              <span className={isDark ? "text-dark-400" : "text-dark-500"}>Completed</span>
+              <span className={isDark ? "text-dark-400" : "text-dark-500"}>{t("sidebar.completed")}</span>
               <span className="text-success-500 font-semibold bg-success-500/10 px-2 py-0.5 rounded-md">
                 {files.filter((f) => f.status === "completed").length}
               </span>
             </div>
             <div className="flex justify-between items-center text-sm">
-              <span className={isDark ? "text-dark-400" : "text-dark-500"}>Errors</span>
+              <span className={isDark ? "text-dark-400" : "text-dark-500"}>{t("sidebar.errors")}</span>
               <span className="text-error-500 font-semibold bg-error-500/10 px-2 py-0.5 rounded-md">
                 {files.filter((f) => f.status === "error").length}
               </span>

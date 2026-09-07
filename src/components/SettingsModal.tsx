@@ -33,6 +33,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
 import toast from "react-hot-toast";
 import { useStore } from "../store/useStore";
+import { t, translateCapabilityState } from "../locales";
 import { playCompletionSound } from "../utils/sounds";
 
 interface SettingsModalProps {
@@ -48,47 +49,47 @@ interface Category {
   description: string;
 }
 
-const categories: Category[] = [
-  {
-    id: "general",
-    label: "General",
-    icon: Settings2,
-    description: "Output folder, theme, and app preferences",
-  },
-  {
-    id: "images",
-    label: "Images",
-    icon: Image,
-    description: "Quality and compression settings for images",
-  },
-  {
-    id: "video",
-    label: "Video & Audio",
-    icon: Video,
-    description: "GPU acceleration and encoding options",
-  },
-  {
-    id: "documents",
-    label: "Documents",
-    icon: FileText,
-    description: "PDF, Office, and document conversion settings",
-  },
-  {
-    id: "processing",
-    label: "Performance",
-    icon: Gauge,
-    description: "Batch processing and resource management",
-  },
-  {
-    id: "advanced",
-    label: "Advanced",
-    icon: Code,
-    description: "Custom commands, context menu, and power user features",
-  },
-];
-
 export function SettingsModal({ onClose }: SettingsModalProps) {
-  const { settings, updateSettings, gpuInfo } = useStore();
+  const { settings, updateSettings, gpuInfo, getCapability } = useStore();
+
+  const categories: Category[] = [
+    {
+      id: "general",
+      label: t("settings.categoryGeneral"),
+      icon: Settings2,
+      description: t("settings.categoryGeneralDesc"),
+    },
+    {
+      id: "images",
+      label: t("settings.categoryImages"),
+      icon: Image,
+      description: t("settings.categoryImagesDesc"),
+    },
+    {
+      id: "video",
+      label: t("settings.categoryVideo"),
+      icon: Video,
+      description: t("settings.categoryVideoDesc"),
+    },
+    {
+      id: "documents",
+      label: t("settings.categoryDocuments"),
+      icon: FileText,
+      description: t("settings.categoryDocumentsDesc"),
+    },
+    {
+      id: "processing",
+      label: t("settings.categoryProcessing"),
+      icon: Gauge,
+      description: t("settings.categoryProcessingDesc"),
+    },
+    {
+      id: "advanced",
+      label: t("settings.categoryAdvanced"),
+      icon: Code,
+      description: t("settings.categoryAdvancedDesc"),
+    },
+  ];
   const [localSettings, setLocalSettings] = useState(settings);
   const [expandedCategory, setExpandedCategory] = useState<CategoryId | null>("general");
   const isDark = settings.theme === "dark";
@@ -109,7 +110,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
 
   const handleSave = () => {
     updateSettings(localSettings);
-    toast.success("Settings saved");
+    toast.success(t("settings.settingsSaved"));
     onClose();
   };
 
@@ -243,13 +244,13 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
             {/* Output Directory */}
             <SettingRow
               icon={HardDrive}
-              title="Output Directory"
-              description="Where converted files will be saved by default"
+              title={t("settings.outputDirectory")}
+              description={t("settings.outputDirectoryDesc")}
             >
               <motion.button
                 className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors max-w-[200px] ${
-                  isDark 
-                    ? "bg-dark-600 hover:bg-dark-500 text-dark-300 hover:text-white" 
+                  isDark
+                    ? "bg-dark-600 hover:bg-dark-500 text-dark-300 hover:text-white"
                     : "bg-gray-200 hover:bg-gray-300 text-gray-600 hover:text-gray-900"
                 }`}
                 onClick={handleSelectOutputDir}
@@ -260,7 +261,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                 <span className="truncate">
                   {localSettings.outputDirectory
                     ? localSettings.outputDirectory.split(/[/\\]/).pop()
-                    : "Choose..."}
+                    : t("settings.choose")}
                 </span>
               </motion.button>
             </SettingRow>
@@ -268,8 +269,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
             {/* Theme */}
             <SettingRow
               icon={Palette}
-              title="Theme"
-              description="Choose dark, light, or follow your system setting"
+              title={t("settings.theme")}
+              description={t("settings.themeDescription")}
             >
               <div className={`flex gap-1 rounded-lg p-1 ${isDark ? "bg-dark-600" : "bg-gray-200"}`}>
                 <motion.button
@@ -282,7 +283,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                   whileTap={{ scale: 0.95 }}
                 >
                   <Moon className="w-3.5 h-3.5" />
-                  Dark
+                  {t("settings.dark")}
                 </motion.button>
                 <motion.button
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
@@ -294,7 +295,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                   whileTap={{ scale: 0.95 }}
                 >
                   <Sun className="w-3.5 h-3.5" />
-                  Light
+                  {t("settings.light")}
                 </motion.button>
                 <motion.button
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
@@ -304,10 +305,10 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                   }`}
                   onClick={() => setLocalSettings((s) => ({ ...s, themePreference: "system" }))}
                   whileTap={{ scale: 0.95 }}
-                  title="Follows your operating system's light/dark setting"
+                  title={t("settings.followsOS")}
                 >
                   <Monitor className="w-3.5 h-3.5" />
-                  System
+                  {t("settings.system")}
                 </motion.button>
               </div>
             </SettingRow>
@@ -316,8 +317,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
             {/* Preserve Metadata */}
             <SettingRow
               icon={Shield}
-              title="Preserve Metadata"
-              description="Keep EXIF data, dates, and other file information"
+              title={t("settings.preserveMetadata")}
+              description={t("settings.preserveMetadataDescription")}
             >
               <Toggle
                 enabled={localSettings.preserveMetadata}
@@ -333,8 +334,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
             {/* Completion Sound */}
             <SettingRow
               icon={localSettings.playCompletionSound ? Volume2 : VolumeX}
-              title="Completion Sound"
-              description="Play a sound when conversions finish"
+              title={t("settings.completionSound")}
+              description={t("settings.completionSoundDescription")}
             >
               <div className="flex items-center gap-2">
                 <Toggle
@@ -353,7 +354,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
                   >
-                    Test
+                    {t("settings.test")}
                   </motion.button>
                 )}
               </div>
@@ -362,8 +363,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
             {/* Privacy Badge */}
             <SettingRow
               icon={localSettings.showPrivacyBadge ? Eye : EyeOff}
-              title="Privacy Badge"
-              description="Show '100% Local' indicator in header"
+              title={t("settings.privacyBadgeTitle")}
+              description={t("settings.privacyBadgeDescription")}
             >
               <Toggle
                 enabled={localSettings.showPrivacyBadge}
@@ -383,9 +384,9 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                   <FileType className={`w-4 h-4 ${isDark ? "text-dark-400" : "text-gray-500"}`} />
                 </div>
                 <div className="flex-1">
-                  <h4 className={`text-sm font-medium ${isDark ? "text-white" : "text-gray-900"}`}>Output Filename</h4>
+                  <h4 className={`text-sm font-medium ${isDark ? "text-white" : "text-gray-900"}`}>{t("settings.outputFilename")}</h4>
                   <p className={`text-xs mt-0.5 mb-2 ${isDark ? "text-dark-400" : "text-gray-500"}`}>
-                    Template for output files. Variables: {"{name}"}, {"{date}"}, {"{time}"}, {"{quality}"}
+                    {t("settings.outputFilenameDesc")} {"{name}"}, {"{date}"}, {"{time}"}, {"{quality}"}
                   </p>
                   <input
                     type="text"
@@ -404,7 +405,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                     }`}
                   />
                   <p className={`text-xs mt-1.5 ${isDark ? "text-dark-500" : "text-gray-400"}`}>
-                    Preview: {localSettings.outputFilenameTemplate
+                    {t("settings.preview")}: {localSettings.outputFilenameTemplate
                       .replace("{name}", "example")
                       .replace("{date}", new Date().toISOString().split("T")[0])
                       .replace("{time}", new Date().toTimeString().split(" ")[0].replace(/:/g, "-"))
@@ -429,9 +430,9 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                 <div className="flex-1">
                   <div className="flex items-center justify-between mb-3">
                     <div>
-                      <h4 className={`text-sm font-medium ${isDark ? "text-white" : "text-gray-900"}`}>Default Quality</h4>
+                      <h4 className={`text-sm font-medium ${isDark ? "text-white" : "text-gray-900"}`}>{t("settings.defaultQuality")}</h4>
                       <p className={`text-xs mt-0.5 ${isDark ? "text-dark-400" : "text-gray-500"}`}>
-                        Balance between file size and image quality
+                        {t("settings.defaultQualityDesc")}
                       </p>
                     </div>
                     <span className="text-sm font-semibold text-accent-500 bg-accent-600/10 px-2.5 py-1 rounded-lg">
@@ -452,8 +453,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                     className={`w-full h-2 rounded-lg appearance-none cursor-pointer accent-accent-600 ${isDark ? "bg-dark-600" : "bg-gray-200"}`}
                   />
                   <div className={`flex justify-between text-xs mt-2 ${isDark ? "text-dark-500" : "text-gray-500"}`}>
-                    <span>Smaller size</span>
-                    <span>Higher quality</span>
+                    <span>{t("settings.smallerSize")}</span>
+                    <span>{t("settings.higherQuality")}</span>
                   </div>
                 </div>
               </div>
@@ -466,9 +467,9 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                   <Image className={`w-4 h-4 ${isDark ? "text-dark-400" : "text-gray-500"}`} />
                 </div>
                 <div className="flex-1">
-                  <h4 className={`text-sm font-medium ${isDark ? "text-white" : "text-gray-900"}`}>Supported Formats</h4>
+                  <h4 className={`text-sm font-medium ${isDark ? "text-white" : "text-gray-900"}`}>{t("settings.supportedFormats")}</h4>
                   <p className={`text-xs mt-0.5 mb-3 ${isDark ? "text-dark-400" : "text-gray-500"}`}>
-                    Available input and output formats for images
+                    {t("settings.supportedFormatsImagesDesc")}
                   </p>
                   <div className="flex flex-wrap gap-1.5">
                     {["JPG", "PNG", "WebP", "GIF", "BMP", "TIFF", "ICO", "AVIF"].map(
@@ -494,11 +495,11 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
             {/* GPU Acceleration */}
             <SettingRow
               icon={Cpu}
-              title="GPU Acceleration"
+              title={t("settings.gpuAcceleration")}
               description={
                 gpuInfo?.available
-                  ? "Use hardware encoding for faster conversions"
-                  : "No compatible GPU detected"
+                  ? t("settings.gpuAccelerationEnabledDesc")
+                  : t("settings.gpuAccelerationDisabledDesc")
               }
             >
               {gpuInfo?.available ? (
@@ -514,7 +515,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                 />
               ) : (
                 <span className={`text-xs px-2 py-1 rounded ${isDark ? "text-dark-500 bg-dark-600" : "text-gray-500 bg-gray-200"}`}>
-                  Unavailable
+                  {t("settings.unavailable")}
                 </span>
               )}
             </SettingRow>
@@ -527,9 +528,9 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                     <Zap className="w-4 h-4 text-yellow-500" />
                   </div>
                   <div className="flex-1">
-                    <h4 className={`text-sm font-medium mb-1 ${isDark ? "text-white" : "text-gray-900"}`}>GPU Encoder</h4>
+                    <h4 className={`text-sm font-medium mb-1 ${isDark ? "text-white" : "text-gray-900"}`}>{t("settings.gpuEncoder")}</h4>
                     <p className={`text-xs mb-3 ${isDark ? "text-dark-400" : "text-gray-500"}`}>
-                      Select your preferred hardware encoder
+                      {t("settings.gpuEncoderDesc")}
                     </p>
                     <div className="space-y-2">
                       {gpuInfo.encoders
@@ -581,20 +582,20 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
               <div className="py-4">
                 <div className={`rounded-lg p-3 ${isDark ? "bg-dark-600/50" : "bg-gray-100"}`}>
                   <p className={`text-xs mb-2 ${isDark ? "text-dark-400" : "text-gray-500"}`}>
-                    Hardware acceleration requires one of:
+                    {t("settings.noGpuRequires")}
                   </p>
                   <ul className={`text-xs space-y-1 ${isDark ? "text-dark-500" : "text-gray-500"}`}>
                     <li className="flex items-center gap-2">
                       <span className={`w-1 h-1 rounded-full ${isDark ? "bg-dark-500" : "bg-gray-400"}`} />
-                      NVIDIA GPU with NVENC
+                      NVIDIA GPU (NVENC)
                     </li>
                     <li className="flex items-center gap-2">
                       <span className={`w-1 h-1 rounded-full ${isDark ? "bg-dark-500" : "bg-gray-400"}`} />
-                      AMD GPU with AMF
+                      AMD GPU (AMF)
                     </li>
                     <li className="flex items-center gap-2">
                       <span className={`w-1 h-1 rounded-full ${isDark ? "bg-dark-500" : "bg-gray-400"}`} />
-                      Intel with Quick Sync
+                      Intel (Quick Sync)
                     </li>
                   </ul>
                 </div>
@@ -603,7 +604,14 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
           </div>
         );
 
-      case "documents":
+      case "documents": {
+        // Office capability is backend-computed (see
+        // src-tauri/src/capabilities.rs) - this panel only renders what the
+        // backend reports, it never assumes availability itself, and never
+        // names the underlying engine or points the user at a manual
+        // install (Step 3, section E/J).
+        const officeCapability = getCapability("office_to_pdf");
+        const officeAvailable = officeCapability?.state === "AVAILABLE";
         return (
           <div className="space-y-1">
             <div className="py-4">
@@ -612,14 +620,23 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                   <FileText className={`w-4 h-4 ${isDark ? "text-dark-400" : "text-gray-500"}`} />
                 </div>
                 <div className="flex-1">
-                  <h4 className={`text-sm font-medium ${isDark ? "text-white" : "text-gray-900"}`}>Document Conversion</h4>
+                  <h4 className={`text-sm font-medium ${isDark ? "text-white" : "text-gray-900"}`}>{t("settings.documentConversion")}</h4>
                   <p className={`text-xs mt-0.5 mb-3 ${isDark ? "text-dark-400" : "text-gray-500"}`}>
-                    Powered by LibreOffice, Pandoc, and Ghostscript
+                    {officeAvailable
+                      ? t("settings.documentConversionAvailableDesc")
+                      : t("settings.documentConversionUnavailableDesc")}
                   </p>
-                  <div className="space-y-3">
+                  {!officeAvailable && officeCapability && (
+                    <div className={`mb-3 px-3 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 ${
+                      isDark ? "bg-amber-500/10 text-amber-500" : "bg-amber-50 text-amber-600"
+                    }`}>
+                      <span>{translateCapabilityState(officeCapability.state)}</span>
+                    </div>
+                  )}
+                  <div className={`space-y-3 ${officeAvailable ? "" : "opacity-50"}`}>
                     <div>
                       <span className={`text-xs uppercase tracking-wide ${isDark ? "text-dark-500" : "text-gray-500"}`}>
-                        Office Documents
+                        {t("settings.officeDocuments")}
                       </span>
                       <div className="flex flex-wrap gap-1.5 mt-1.5">
                         {["DOCX", "DOC", "XLSX", "XLS", "PPTX", "PPT", "ODT"].map(
@@ -636,7 +653,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                     </div>
                     <div>
                       <span className={`text-xs uppercase tracking-wide ${isDark ? "text-dark-500" : "text-gray-500"}`}>
-                        Other Formats
+                        {t("settings.otherFormats")}
                       </span>
                       <div className="flex flex-wrap gap-1.5 mt-1.5">
                         {["PDF", "TXT", "RTF", "MD", "HTML", "EPUB"].map((format) => (
@@ -655,6 +672,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
             </div>
           </div>
         );
+      }
 
       case "processing":
         return (
@@ -662,8 +680,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
             {/* Parallel Processing Toggle */}
             <SettingRow
               icon={Layers}
-              title="Parallel Processing"
-              description="Convert multiple files simultaneously"
+              title={t("settings.parallelProcessing")}
+              description={t("settings.parallelProcessingDesc")}
             >
               <Toggle
                 enabled={localSettings.parallelProcessing}
@@ -687,10 +705,10 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                     <div className="flex items-center justify-between mb-3">
                       <div>
                         <h4 className={`text-sm font-medium ${isDark ? "text-white" : "text-gray-900"}`}>
-                          Concurrent Files
+                          {t("settings.concurrentFiles")}
                         </h4>
                         <p className={`text-xs mt-0.5 ${isDark ? "text-dark-400" : "text-gray-500"}`}>
-                          Maximum files to process at once
+                          {t("settings.concurrentFilesDesc")}
                         </p>
                       </div>
                       <span className="text-sm font-semibold text-accent-500 bg-accent-600/10 px-2.5 py-1 rounded-lg">
@@ -711,8 +729,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                       className={`w-full h-2 rounded-lg appearance-none cursor-pointer accent-accent-600 ${isDark ? "bg-dark-600" : "bg-gray-200"}`}
                     />
                     <div className={`flex justify-between text-xs mt-2 ${isDark ? "text-dark-500" : "text-gray-500"}`}>
-                      <span>Less CPU usage</span>
-                      <span>Faster processing</span>
+                      <span>{t("settings.lessCpu")}</span>
+                      <span>{t("settings.fasterProcessing")}</span>
                     </div>
                   </div>
                 </div>
@@ -723,8 +741,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
             <div className="py-4">
               <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">
                 <p className="text-xs text-amber-500">
-                  <strong>Note:</strong> Video files are always processed one at a time
-                  due to high resource requirements.
+                  {t("settings.performanceWarning")}
                 </p>
               </div>
             </div>
@@ -743,9 +760,9 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                 <div className="flex-1">
                   <div className="flex items-center justify-between mb-2">
                     <div>
-                      <h4 className={`text-sm font-medium ${isDark ? "text-white" : "text-gray-900"}`}>Context Menu</h4>
+                      <h4 className={`text-sm font-medium ${isDark ? "text-white" : "text-gray-900"}`}>{t("settings.contextMenu")}</h4>
                       <p className={`text-xs mt-0.5 ${isDark ? "text-dark-400" : "text-gray-500"}`}>
-                        Add "Convert with LocalConvert" to right-click menu
+                        {t("settings.contextMenuDesc")}
                       </p>
                     </div>
                   </div>
@@ -755,36 +772,36 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                       onClick={async () => {
                         try {
                           const exePath = await invoke<string>("register_context_menu");
-                          toast.success("Context menu registered!");
+                          toast.success(t("settings.contextMenuRegistered"));
                           console.log("Registered with exe:", exePath);
                         } catch (error) {
-                          toast.error("Failed to register context menu");
+                          toast.error(t("settings.contextMenuRegisterFailed"));
                           console.error(error);
                         }
                       }}
                       whileHover={{ scale: 1.02 }}
                       whileTap={{ scale: 0.98 }}
                     >
-                      Register
+                      {t("settings.register")}
                     </motion.button>
                     <motion.button
                       className={`text-xs px-3 py-1.5 rounded-lg ${isDark ? "bg-error-600/20 text-error-500 hover:bg-error-600/30" : "bg-red-100 text-red-700 hover:bg-red-200"}`}
                       onClick={async () => {
                         try {
                           await invoke("unregister_context_menu");
-                          toast.success("Context menu removed");
+                          toast.success(t("settings.contextMenuRemoved"));
                         } catch (error) {
-                          toast.error("Failed to remove context menu");
+                          toast.error(t("settings.contextMenuRemoveFailed"));
                         }
                       }}
                       whileHover={{ scale: 1.02 }}
                       whileTap={{ scale: 0.98 }}
                     >
-                      Unregister
+                      {t("settings.unregister")}
                     </motion.button>
                   </div>
                   <p className={`text-xs mt-2 ${isDark ? "text-amber-500/80" : "text-amber-600"}`}>
-                    Note: Build the app first with <code className="px-1 py-0.5 rounded bg-dark-600 text-dark-200">npm run tauri build</code> for context menu to work properly.
+                    {t("settings.contextMenuBuildNote")} <code className="px-1 py-0.5 rounded bg-dark-600 text-dark-200">npm run tauri build</code>
                   </p>
                 </div>
               </div>
@@ -797,9 +814,9 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                   <Terminal className={`w-4 h-4 ${isDark ? "text-dark-400" : "text-gray-500"}`} />
                 </div>
                 <div className="flex-1">
-                  <h4 className={`text-sm font-medium ${isDark ? "text-white" : "text-gray-900"}`}>Custom FFmpeg Parameters</h4>
+                  <h4 className={`text-sm font-medium ${isDark ? "text-white" : "text-gray-900"}`}>{t("settings.customFfmpegParams")}</h4>
                   <p className={`text-xs mt-0.5 mb-2 ${isDark ? "text-dark-400" : "text-gray-500"}`}>
-                    Additional FFmpeg arguments for video/audio conversions
+                    {t("settings.customFfmpegParamsDesc")}
                   </p>
                   <textarea
                     value={localSettings.customFfmpegParams}
@@ -818,9 +835,9 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                     }`}
                   />
                   <div className={`text-xs mt-1.5 space-y-0.5 ${isDark ? "text-dark-500" : "text-gray-400"}`}>
-                    <p>Examples:</p>
-                    <p className="font-mono">-preset veryslow (better quality, slower)</p>
-                    <p className="font-mono">-tune animation (for cartoons)</p>
+                    <p>{t("settings.examples")}</p>
+                    <p className="font-mono">-preset veryslow</p>
+                    <p className="font-mono">-tune animation</p>
                   </div>
                 </div>
               </div>
@@ -833,15 +850,15 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                   <Code className={`w-4 h-4 ${isDark ? "text-dark-400" : "text-gray-500"}`} />
                 </div>
                 <div className="flex-1">
-                  <h4 className={`text-sm font-medium mb-2 ${isDark ? "text-white" : "text-gray-900"}`}>Keyboard Shortcuts</h4>
+                  <h4 className={`text-sm font-medium mb-2 ${isDark ? "text-white" : "text-gray-900"}`}>{t("settings.keyboardShortcuts")}</h4>
                   <div className="grid grid-cols-2 gap-2 text-xs">
                     {[
-                      { keys: "Ctrl+O", action: "Open files" },
-                      { keys: "Ctrl+A", action: "Select all" },
-                      { keys: "Delete", action: "Remove selected" },
-                      { keys: "Enter", action: "Start conversion" },
-                      { keys: "Escape", action: "Cancel/Deselect" },
-                      { keys: "Ctrl+Shift+A", action: "Deselect all" },
+                      { keys: "Ctrl+O", action: t("settings.kbdOpenFiles") },
+                      { keys: "Ctrl+A", action: t("settings.kbdSelectAll") },
+                      { keys: "Delete", action: t("settings.kbdRemoveSelected") },
+                      { keys: "Enter", action: t("settings.kbdStartConversion") },
+                      { keys: "Escape", action: t("settings.kbdCancelDeselect") },
+                      { keys: "Ctrl+Shift+A", action: t("settings.kbdDeselectAll") },
                     ].map((shortcut) => (
                       <div key={shortcut.keys} className="flex items-center justify-between">
                         <span className={isDark ? "text-dark-400" : "text-gray-500"}>{shortcut.action}</span>
@@ -861,8 +878,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
             <div className="py-4">
               <div className="bg-amber-500/10 border border-amber-500/20 rounded-lg p-3">
                 <p className="text-xs text-amber-500">
-                  <strong>Warning:</strong> Custom FFmpeg parameters may cause conversion failures 
-                  if invalid. Only use if you know what you're doing.
+                  {t("settings.customParamsWarning")}
                 </p>
               </div>
             </div>
@@ -894,9 +910,9 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
         {/* Header */}
         <div className={`flex items-center justify-between p-5 border-b flex-shrink-0 ${isDark ? "border-dark-700" : "border-gray-200"}`}>
           <div>
-            <h2 className={`text-lg font-semibold ${isDark ? "text-white" : "text-gray-900"}`}>Settings</h2>
+            <h2 className={`text-lg font-semibold ${isDark ? "text-white" : "text-gray-900"}`}>{t("settings.title")}</h2>
             <p className={`text-xs mt-0.5 ${isDark ? "text-dark-400" : "text-gray-500"}`}>
-              Configure your conversion preferences
+              {t("settings.subtitle")}
             </p>
           </div>
           <motion.button
@@ -930,7 +946,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
             whileHover={{ scale: 1.02 }}
             whileTap={{ scale: 0.98 }}
           >
-            Cancel
+            {t("settings.cancel")}
           </motion.button>
           <motion.button
             className="px-6 py-2.5 rounded-xl bg-accent-gradient text-white font-bold tracking-wide shadow-glow btn-glow flex items-center gap-2 text-sm"
@@ -939,7 +955,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
             whileTap={{ scale: 0.95 }}
           >
             <Save className="w-4 h-4" />
-            Save Changes
+            {t("settings.saveChanges")}
           </motion.button>
         </div>
       </motion.div>

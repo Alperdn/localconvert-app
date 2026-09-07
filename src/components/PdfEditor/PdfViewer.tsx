@@ -3,6 +3,7 @@ import * as fabric from "fabric";
 import type { ToolType, ToolOptions, PdfPage, AnnotationData, TextBlock, FormField } from "./types";
 import { TextOverlay } from "./TextOverlay";
 import { FormFieldsOverlay } from "./FormFieldsOverlay";
+import { t } from "../../locales";
 
 // Text input modal for whiteout & replace
 interface TextInputModalProps {
@@ -59,7 +60,7 @@ function TextInputModal({ isOpen, onSubmit, onCancel, suggestedFontSize, isDark 
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Type your text here..."
+          placeholder={t("pdfEditor.typeYourTextHere")}
           className={`w-full px-3 py-2 rounded-lg border text-sm mb-3 ${
             isDark
               ? "bg-dark-700 border-dark-600 text-white placeholder-dark-400"
@@ -378,7 +379,7 @@ export function PdfViewer({
 
       switch (activeTool) {
         case "text": {
-          const text = new fabric.IText("Type here...", {
+          const text = new fabric.IText(t("pdfEditor.typeHere"), {
             left: x,
             top: y,
             fontFamily: toolOptions.fontFamily,

@@ -1,0 +1,264 @@
+//! Backend-computed feature capability model.
+//!
+//! The frontend should never have to guess whether a feature will work by
+//! trying it and parsing the failure - it can call `get_capabilities` and
+//! ask directly. This reports capability-level status (`office_to_pdf`,
+//! `video_conversion`, ...), never raw tool names or filesystem paths, so
+//! the UI can disable an unavailable feature cleanly instead of letting a
+//! user pick it and fail after selecting a file.
+//!
+//! This module does not yet drive any UI (Phase 2 work) - it establishes
+//! the backend contract first.
+
+use crate::engines::{engine_id::EngineId, resolver};
+use crate::tools;
+use serde::Serialize;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum CapabilityState {
+    Available,
+    EngineMissing,
+    NotImplemented,
+    #[allow(dead_code)]
+    DisabledByPolicy,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Capability {
+    pub id: String,
+    pub state: CapabilityState,
+    /// Safe to show in the UI as-is - never a path or executable name.
+    pub message: String,
+}
+
+fn capability(id: &str, state: CapabilityState, message: &str) -> Capability {
+    Capability {
+        id: id.to_string(),
+        state,
+        message: message.to_string(),
+    }
+}
+
+/// Pure, synchronous computation so it's directly unit-testable without a
+/// Tauri runtime. The `#[tauri::command]` wrapper below just calls this.
+pub fn compute_capabilities() -> Vec<Capability> {
+    let office_available = resolver::is_available(EngineId::Office);
+    let ffmpeg_available = resolver::is_available(EngineId::Ffmpeg);
+    let magick_available = tools::check_tool_installed("magick").installed;
+
+    vec![
+        // JPEG/PNG/WebP/BMP/GIF/TIFF conversion, resize, crop, and rotate
+        // are handled by the in-process native image pipeline (see
+        // native::image) and never need ImageMagick - so these stay
+        // AVAILABLE regardless of `magick_available`.
+        capability(
+            "image_conversion",
+            CapabilityState::Available,
+            "Convert between common image formats (JPEG, PNG, WebP, BMP, GIF, TIFF).",
+        ),
+        capability(
+            "image_resize",
+            CapabilityState::Available,
+            "Resize images.",
+        ),
+        capability(
+            "image_crop",
+            CapabilityState::Available,
+            "Crop images.",
+        ),
+        capability(
+            "image_rotate",
+            CapabilityState::Available,
+            "Rotate images in 90-degree steps.",
+        ),
+        capability(
+            "svg_rasterization",
+            if magick_available {
+                CapabilityState::Available
+            } else {
+                CapabilityState::EngineMissing
+            },
+            "Convert SVG to raster images.",
+        ),
+        capability(
+            "advanced_image_formats",
+            if magick_available {
+                CapabilityState::Available
+            } else {
+                CapabilityState::EngineMissing
+            },
+            "Convert AVIF and other advanced image formats.",
+        ),
+        capability(
+            "heic_conversion",
+            CapabilityState::NotImplemented,
+            "HEIC/HEIF conversion is not yet available in the app.",
+        ),
+        capability(
+            "archive_operations",
+            CapabilityState::Available,
+            "Create and extract ZIP archives natively. Other archive formats need an external tool.",
+        ),
+        capability(
+            "pdf_text_editing",
+            CapabilityState::Available,
+            "Extract and edit PDF text in place.",
+        ),
+        capability(
+            "pdf_structural_ops",
+            CapabilityState::NotImplemented,
+            "PDF merge, split, and rotate are not yet available in the app.",
+        ),
+        capability(
+            "office_to_pdf",
+            if office_available {
+                CapabilityState::Available
+            } else {
+                CapabilityState::EngineMissing
+            },
+            if office_available {
+                "Convert Office documents to PDF."
+            } else {
+                "Office conversion engine is not available on this installation."
+            },
+        ),
+        capability(
+            "video_conversion",
+            if ffmpeg_available {
+                CapabilityState::Available
+            } else {
+                CapabilityState::EngineMissing
+            },
+            "Convert between video formats.",
+        ),
+        capability(
+            "video_trimming",
+            if ffmpeg_available {
+                CapabilityState::Available
+            } else {
+                CapabilityState::EngineMissing
+            },
+            "Trim video clips.",
+        ),
+        capability(
+            "audio_extraction",
+            if ffmpeg_available {
+                CapabilityState::Available
+            } else {
+                CapabilityState::EngineMissing
+            },
+            "Convert and extract audio tracks.",
+        ),
+        capability(
+            "ocr",
+            CapabilityState::NotImplemented,
+            "OCR is not yet available in the app.",
+        ),
+    ]
+}
+
+#[tauri::command]
+pub async fn get_capabilities() -> Vec<Capability> {
+    compute_capabilities()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn office_to_pdf_reflects_missing_engine_on_this_machine() {
+        // Phase 1 policy: this dev/CI machine never has LibreOffice
+        // installed, so this exercises the real "missing" branch rather
+        // than a mock.
+        if resolver::is_available(EngineId::Office) {
+            return;
+        }
+        let caps = compute_capabilities();
+        let office = caps.iter().find(|c| c.id == "office_to_pdf").unwrap();
+        assert_eq!(office.state, CapabilityState::EngineMissing);
+        assert_eq!(
+            office.message,
+            "Office conversion engine is not available on this installation."
+        );
+    }
+
+    #[test]
+    fn no_capability_exposes_a_filesystem_path_or_executable_name() {
+        for cap in compute_capabilities() {
+            let lower = cap.message.to_lowercase();
+            assert!(!cap.message.contains('\\'), "path separator in: {}", cap.message);
+            assert!(!lower.contains(".exe"), "executable name in: {}", cap.message);
+            assert!(!lower.contains("program files"), "install path in: {}", cap.message);
+        }
+    }
+
+    #[test]
+    fn every_capability_has_a_stable_unique_id() {
+        let caps = compute_capabilities();
+        let mut ids: Vec<&str> = caps.iter().map(|c| c.id.as_str()).collect();
+        let count_before = ids.len();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), count_before, "duplicate capability id");
+    }
+
+    /// Step 3 (Turkish UI completion) frontend contract: `src/locales/tr.ts`
+    /// and `en.ts` hand-maintain a `capabilityCategories` map keyed by every
+    /// capability id this function can emit, so the System Status /
+    /// ToolsSetup UI never falls back to a raw id. This test can't read the
+    /// TS files, but it pins the exact set of ids the frontend map must
+    /// cover - if a capability is added/removed here without updating the
+    /// locale files, this is the test that should be extended to catch it
+    /// and remind the author to update both `tr.ts`/`en.ts`.
+    #[test]
+    fn capability_ids_match_the_frontend_translation_contract() {
+        let expected = [
+            "image_conversion",
+            "image_resize",
+            "image_crop",
+            "image_rotate",
+            "svg_rasterization",
+            "advanced_image_formats",
+            "heic_conversion",
+            "archive_operations",
+            "pdf_text_editing",
+            "pdf_structural_ops",
+            "office_to_pdf",
+            "video_conversion",
+            "video_trimming",
+            "audio_extraction",
+            "ocr",
+        ];
+        let caps = compute_capabilities();
+        let ids: Vec<&str> = caps.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(
+            ids, expected,
+            "capabilities.rs now emits a different id set than src/locales/{{tr,en}}.ts's \
+             capabilityCategories map expects - update both locale files' \
+             `capabilityCategories` when changing this list."
+        );
+    }
+
+    /// Every state the frontend's `translateCapabilityState`/
+    /// `capabilityStates` map (src/locales/tr.ts, en.ts) declares a label
+    /// for. If a fifth `CapabilityState` variant were ever added without
+    /// this test being updated, that's the signal to also add its Turkish
+    /// label - never let the UI fall back to displaying a raw enum value.
+    #[test]
+    fn every_capability_state_variant_is_covered_by_this_test() {
+        let all_states = [
+            CapabilityState::Available,
+            CapabilityState::EngineMissing,
+            CapabilityState::NotImplemented,
+            CapabilityState::DisabledByPolicy,
+        ];
+        // Compile-time-ish safety net: if a match here were non-exhaustive
+        // it would still compile (this isn't a `match`), so the real
+        // guarantee is `#[deny(unreachable_patterns)]`-style vigilance in
+        // code review - this test exists to name the 4 known states
+        // explicitly so an added 5th variant is visible in a diff here.
+        assert_eq!(all_states.len(), 4);
+    }
+}

@@ -1,6 +1,10 @@
+mod capabilities;
 mod commands;
 mod converter;
+mod engines;
+mod native;
 mod pdf_text_editor;
+mod reconstruction;
 mod security;
 mod tools;
 mod types;
@@ -91,7 +95,6 @@ pub fn run() {
         // `merge_pdfs`, `split_pdf`, `compress_pdf`, for the pattern).
         .invoke_handler(tauri::generate_handler![
             commands::check_tools,
-            commands::download_tool,
             commands::detect_gpu,
             commands::convert_file,
             commands::cancel_conversion,
@@ -116,6 +119,9 @@ pub fn run() {
             // Phase 1 - Secure Desktop Foundation
             commands::authorize_fs_path,
             commands::system_status,
+            // V1 dependency architecture - backend-computed capability
+            // model (see capabilities.rs)
+            capabilities::get_capabilities,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

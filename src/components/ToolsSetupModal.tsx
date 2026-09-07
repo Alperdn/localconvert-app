@@ -3,97 +3,54 @@ import { motion } from "framer-motion";
 import {
   X,
   Check,
-  AlertCircle,
-  Download,
+  AlertTriangle,
+  Ban,
   RefreshCw,
   Wrench,
+  Info,
 } from "lucide-react";
 import toast from "react-hot-toast";
 import { useStore } from "../store/useStore";
+import type { CapabilityState } from "../store/useStore";
+import { t, translateCapabilityState, translateCapabilityCategory } from "../locales";
 
 interface ToolsSetupModalProps {
   onClose: () => void;
 }
 
-const TOOL_INFO: Record<
-  string,
-  { name: string; description: string; required: boolean }
-> = {
-  ffmpeg: {
-    name: "FFmpeg",
-    description: "Video and audio conversion",
-    required: true,
-  },
-  magick: {
-    name: "ImageMagick",
-    description: "Image conversion and manipulation",
-    required: true,
-  },
-  soffice: {
-    name: "LibreOffice",
-    description: "Document conversion (Office formats)",
-    required: false,
-  },
-  pandoc: {
-    name: "Pandoc",
-    description: "Document conversion (Markdown, HTML, etc.)",
-    required: false,
-  },
-  gswin64c: {
-    name: "Ghostscript",
-    description: "PDF operations",
-    required: false,
-  },
-  tesseract: {
-    name: "Tesseract OCR",
-    description: "Text recognition in images/PDFs",
-    required: false,
-  },
-  "7z": {
-    name: "7-Zip",
-    description: "Archive operations",
-    required: false,
-  },
+// Product decision (Step 3, section J): LocalConvert ships its required
+// conversion engines bundled with the app - end users are never asked to
+// find, download, or install a third-party tool themselves, and this panel
+// must not suggest otherwise. It is a READ-ONLY status view driven entirely
+// by the backend capability model (see src-tauri/src/capabilities.rs); it
+// used to offer "Install"/"Download" buttons that opened external download
+// pages, which has been removed as misleading manual-install UX now that
+// bundling is the actual plan. There is deliberately no download/install
+// action left anywhere in this component.
+const CAPABILITY_ICON: Record<CapabilityState, React.ComponentType<{ className?: string }>> = {
+  AVAILABLE: Check,
+  ENGINE_MISSING: AlertTriangle,
+  NOT_IMPLEMENTED: AlertTriangle,
+  DISABLED_BY_POLICY: Ban,
 };
 
 export function ToolsSetupModal({ onClose }: ToolsSetupModalProps) {
-  const { tools, checkTools, downloadTool, toolsChecked, settings } = useStore();
+  const { capabilities, capabilitiesLoaded, loadCapabilities, settings } = useStore();
   const isDark = settings.theme === "dark";
 
   useEffect(() => {
-    if (!toolsChecked) {
-      checkTools();
+    if (!capabilitiesLoaded) {
+      loadCapabilities();
     }
-  }, [checkTools, toolsChecked]);
-
-  const handleDownload = async (toolName: string) => {
-    try {
-      toast.loading(`Opening download page for ${TOOL_INFO[toolName]?.name || toolName}...`, {
-        id: `download-${toolName}`,
-      });
-      await downloadTool(toolName);
-      toast.success(
-        `Download page opened. Install ${TOOL_INFO[toolName]?.name || toolName} and restart the app.`,
-        { id: `download-${toolName}`, duration: 5000 }
-      );
-    } catch (error) {
-      toast.error(`Failed to open download page`, { id: `download-${toolName}` });
-    }
-  };
+  }, [capabilitiesLoaded, loadCapabilities]);
 
   const handleRefresh = async () => {
-    toast.loading("Checking tools...", { id: "refresh-tools" });
-    await checkTools();
-    toast.success("Tools checked", { id: "refresh-tools" });
+    toast.loading(t("toolsSetup.checking"), { id: "refresh-capabilities" });
+    await loadCapabilities();
+    toast.success(t("toolsSetup.checked"), { id: "refresh-capabilities" });
   };
 
-  const installedCount = tools.filter((t) => t.installed).length;
-  const requiredTools = Object.entries(TOOL_INFO)
-    .filter(([, info]) => info.required)
-    .map(([key]) => key);
-  const requiredInstalled = tools.filter(
-    (t) => t.installed && requiredTools.includes(t.name)
-  ).length;
+  const availableCount = capabilities.filter((c) => c.state === "AVAILABLE").length;
 
   return (
     <motion.div
@@ -119,9 +76,9 @@ export function ToolsSetupModal({ onClose }: ToolsSetupModalProps) {
               <Wrench className="w-5 h-5 text-white" />
             </div>
             <div>
-              <h2 className={`text-xl font-semibold ${isDark ? "text-white" : "text-gray-900"}`}>Conversion Tools</h2>
+              <h2 className={`text-xl font-semibold ${isDark ? "text-white" : "text-gray-900"}`}>{t("toolsSetup.title")}</h2>
               <p className={`text-sm ${isDark ? "text-dark-400" : "text-gray-500"}`}>
-                {installedCount} of {tools.length} tools installed
+                {availableCount} / {capabilities.length}
               </p>
             </div>
           </div>
@@ -135,7 +92,7 @@ export function ToolsSetupModal({ onClose }: ToolsSetupModalProps) {
               whileTap={{ scale: 0.98 }}
             >
               <RefreshCw className="w-4 h-4" />
-              Refresh
+              {t("toolsSetup.refresh")}
             </motion.button>
             <motion.button
               className={`p-2 rounded-lg transition-colors ${
@@ -150,116 +107,85 @@ export function ToolsSetupModal({ onClose }: ToolsSetupModalProps) {
           </div>
         </div>
 
-        {/* Status Banner */}
-        {requiredInstalled < requiredTools.length && (
-          <div className="mx-6 mt-6 p-4 bg-warning-500/10 border border-warning-500/30 rounded-xl">
-            <div className="flex items-start gap-3">
-              <AlertCircle className="w-5 h-5 text-warning-500 flex-shrink-0 mt-0.5" />
-              <div>
-                <p className="text-warning-500 font-medium">Required tools missing</p>
-                <p className="text-sm text-warning-500/80 mt-1">
-                  Install FFmpeg and ImageMagick for basic functionality.
-                  Other tools are optional but enable additional conversions.
-                </p>
-              </div>
+        {/* Info banner - explains the bundling model, never suggests manual install */}
+        <div className="mx-6 mt-6 p-4 bg-accent-500/10 border border-accent-500/20 rounded-xl">
+          <div className="flex items-start gap-3">
+            <Info className="w-5 h-5 text-accent-500 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className={`text-sm ${isDark ? "text-dark-200" : "text-gray-700"}`}>{t("toolsSetup.bundledNote")}</p>
+              <p className={`text-xs mt-1 font-medium ${isDark ? "text-dark-400" : "text-gray-500"}`}>{t("toolsSetup.noManualInstallNote")}</p>
             </div>
           </div>
-        )}
+        </div>
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6">
           <div className="space-y-3">
-            {tools.map((tool, index) => {
-              const info = TOOL_INFO[tool.name] || {
-                name: tool.name,
-                description: "Conversion tool",
-                required: false,
-              };
-
+            {capabilities.map((cap, index) => {
+              const Icon = CAPABILITY_ICON[cap.state] ?? AlertTriangle;
+              const available = cap.state === "AVAILABLE";
               return (
                 <motion.div
-                  key={tool.name}
+                  key={cap.id}
                   className={`rounded-xl p-4 border ${
                     isDark ? "bg-dark-700/50" : "bg-gray-50"
-                  } ${
-                    tool.installed
-                      ? "border-success-500/20"
-                      : info.required
-                      ? "border-warning-500/20"
-                      : "border-transparent"
-                  }`}
+                  } ${available ? "border-success-500/20" : "border-transparent"}`}
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: index * 0.05 }}
+                  transition={{ delay: index * 0.03 }}
                 >
                   <div className="flex items-center gap-4">
-                    {/* Status Icon */}
                     <div
                       className={`w-10 h-10 rounded-xl flex items-center justify-center ${
-                        tool.installed
+                        available
                           ? "bg-success-600/20 text-success-500"
                           : isDark
                             ? "bg-dark-600 text-dark-400"
                             : "bg-gray-200 text-gray-500"
                       }`}
                     >
-                      {tool.installed ? (
-                        <Check className="w-5 h-5" />
-                      ) : (
-                        <AlertCircle className="w-5 h-5" />
-                      )}
+                      <Icon className="w-5 h-5" />
                     </div>
 
-                    {/* Info */}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
-                        <span className={`font-medium ${isDark ? "text-white" : "text-gray-900"}`}>{info.name}</span>
-                        {info.required && (
-                          <span className="px-2 py-0.5 rounded-full bg-accent-600/20 text-accent-500 text-xs">
-                            Required
-                          </span>
-                        )}
+                        <span className={`font-medium ${isDark ? "text-white" : "text-gray-900"}`}>
+                          {translateCapabilityCategory(cap.id)}
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-xs ${
+                            available
+                              ? "bg-success-600/20 text-success-500"
+                              : "bg-accent-600/20 text-accent-500"
+                          }`}
+                        >
+                          {translateCapabilityState(cap.state)}
+                        </span>
                       </div>
-                      <p className={`text-sm ${isDark ? "text-dark-400" : "text-gray-500"}`}>{info.description}</p>
-                      {tool.installed && tool.version && (
-                        <p className={`text-xs mt-1 truncate ${isDark ? "text-dark-500" : "text-gray-500"}`}>
-                          {tool.version}
-                        </p>
-                      )}
                     </div>
-
-                    {/* Action */}
-                    {!tool.installed && (
-                      <motion.button
-                        className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent-600/20 text-accent-500 hover:bg-accent-600/30 transition-colors"
-                        onClick={() => handleDownload(tool.name)}
-                        whileHover={{ scale: 1.02 }}
-                        whileTap={{ scale: 0.98 }}
-                      >
-                        <Download className="w-4 h-4" />
-                        Install
-                      </motion.button>
-                    )}
                   </div>
                 </motion.div>
               );
             })}
+
+            {capabilities.length === 0 && (
+              <p className={`text-sm text-center py-8 ${isDark ? "text-dark-400" : "text-gray-500"}`}>
+                {t("toolsSetup.checking")}
+              </p>
+            )}
           </div>
         </div>
 
         {/* Footer */}
         <div className={`p-6 border-t ${isDark ? "border-dark-700" : "border-gray-200"}`}>
-          <div className="flex items-center justify-between">
-            <p className={`text-sm ${isDark ? "text-dark-400" : "text-gray-500"}`}>
-              Tools are downloaded from official sources and installed on your system.
-            </p>
+          <div className="flex items-center justify-end">
             <motion.button
               className="px-6 py-2.5 rounded-xl bg-accent-gradient text-white font-medium"
               onClick={onClose}
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
             >
-              Done
+              {t("toolsSetup.close")}
             </motion.button>
           </div>
         </div>

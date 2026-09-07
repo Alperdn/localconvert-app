@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 import { useStore } from "./store/useStore";
 import type { FileInfo } from "./store/useStore";
+import { t, translateErrorCode } from "./locales";
 import { Header } from "./components/Header";
 import { Sidebar } from "./components/Sidebar";
 import { FileDropZone } from "./components/FileDropZone";
@@ -26,7 +27,7 @@ interface DragDropPayload {
 }
 
 function App() {
-  const { files, checkTools, settings, addFiles, isConverting, pdfEditorFile, closePdfEditor, videoTrimmerFile, closeVideoTrimmer } = useStore();
+  const { files, checkTools, settings, addFiles, isConverting, pdfEditorFile, closePdfEditor, videoTrimmerFile, closeVideoTrimmer, loadCapabilities } = useStore();
   const [showSettings, setShowSettings] = useState(false);
   const [showSystemStatus, setShowSystemStatus] = useState(false);
   const [showTools, setShowTools] = useState(false);
@@ -95,6 +96,13 @@ function App() {
     // Detect GPU encoders
     detectGpu();
 
+    // Fetch backend-computed feature capabilities (see
+    // src-tauri/src/capabilities.rs) once at startup, so the UI can gate
+    // unavailable features (Office/video/OCR/...) before the user ever
+    // tries them, instead of only discovering it after a failed
+    // conversion attempt.
+    loadCapabilities();
+
     // NOTE (Phase 1 - Secure Desktop Foundation):
     // Automatic update checking/downloading/installing has been intentionally
     // removed. This app must not make network requests during normal startup,
@@ -128,7 +136,7 @@ function App() {
       }
     };
     loadStartupFiles();
-  }, [checkTools, detectGpu, addFiles]);
+  }, [checkTools, detectGpu, addFiles, loadCapabilities]);
 
   const isDark = settings.theme === "dark";
 
@@ -281,7 +289,7 @@ function App() {
                 };
 
                 const { toast } = await import("react-hot-toast");
-                toast.loading("Trimming video...", { id: "trim-video" });
+                toast.loading(t("workflow.trimmingVideo"), { id: "trim-video" });
 
                 await invoke("trim_video", {
                   inputPath,
@@ -290,7 +298,7 @@ function App() {
                   endTime: formatTime(endTime),
                 });
 
-                toast.success("Video trimmed successfully!", { id: "trim-video" });
+                toast.success(t("workflow.videoTrimmedSuccess"), { id: "trim-video" });
                 closeVideoTrimmer();
 
                 // Optionally add the trimmed file to the file list
@@ -302,7 +310,7 @@ function App() {
                 }
               } catch (error) {
                 const { toast } = await import("react-hot-toast");
-                toast.error(`Failed to trim video: ${error}`, { id: "trim-video" });
+                toast.error(`${t("workflow.failedToTrimVideo")}: ${translateErrorCode(String(error))}`, { id: "trim-video" });
               }
             }}
           />

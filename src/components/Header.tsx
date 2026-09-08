@@ -13,8 +13,11 @@ interface HeaderProps {
 
 export function Header({ onSettingsClick, onPrivacyClick, onToolsClick, onHelpClick }: HeaderProps) {
   const appWindow = getCurrentWindow();
-  const { settings } = useStore();
-  const isDark = settings.theme === "dark";
+  // Step 3 perf pass (section D): the header is always mounted and rendered
+  // above everything else, so subscribing to the whole store here meant
+  // every unrelated state change re-rendered it too. Only `settings.theme`
+  // is actually read.
+  const isDark = useStore((s) => s.settings.theme) === "dark";
 
   const handleMinimize = () => appWindow.minimize();
   const handleMaximize = () => appWindow.toggleMaximize();

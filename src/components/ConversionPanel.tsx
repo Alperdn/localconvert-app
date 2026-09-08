@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { memo, useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -20,13 +20,26 @@ import {
 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import toast from "react-hot-toast";
-import { useStore, ConversionPreset, GpuInfo, getFilesToConvert } from "../store/useStore";
+import { useShallow } from "zustand/react/shallow";
+import { useStore, ConversionPreset, GpuInfo, getFilesToConvert, commonOutputFormat } from "../store/useStore";
 import { t, translateCapabilityState, describeUnavailableCapability } from "../locales";
 import { getOutputFormats } from "../types/formats";
 import { PresetsSelector } from "./PresetsSelector";
 import { capabilityIdForOutputFormat, getBlockedCapability, isCapabilityUsable } from "../utils/capabilityGating";
 
-export function ConversionPanel() {
+// Step 3 perf pass (section D): zero props, so React.memo means this
+// (large, animation-heavy) panel only re-renders from its own narrowed
+// store subscription.
+export const ConversionPanel = memo(function ConversionPanel() {
+  // Step 3 perf pass (section D): narrowed from a full `useStore()`
+  // subscription so this (large, animation-heavy) panel only re-renders
+  // when one of these fields actually changes. `capabilities` is included
+  // even though it's only read indirectly through `getCapability` - it
+  // must stay part of the subscribed slice so the panel re-renders once
+  // `loadCapabilities()` resolves at startup, otherwise the Office/video
+  // capability gate (Step 3 manual-test fix) could keep showing its
+  // pre-load "unknown = usable" state until something else happened to
+  // trigger a render.
   const {
     files,
     selectedFiles,
@@ -37,8 +50,24 @@ export function ConversionPanel() {
     updateSettings,
     globalOutputFormat,
     setGlobalOutputFormat,
+    setOutputFormatForFiles,
     getCapability,
-  } = useStore();
+  } = useStore(
+    useShallow((s) => ({
+      files: s.files,
+      selectedFiles: s.selectedFiles,
+      activeCategory: s.activeCategory,
+      convertFiles: s.convertFiles,
+      cancelConversion: s.cancelConversion,
+      settings: s.settings,
+      updateSettings: s.updateSettings,
+      globalOutputFormat: s.globalOutputFormat,
+      setGlobalOutputFormat: s.setGlobalOutputFormat,
+      setOutputFormatForFiles: s.setOutputFormatForFiles,
+      getCapability: s.getCapability,
+      capabilities: s.capabilities,
+    }))
+  );
 
   const isDark = settings.theme === "dark";
   const [showOptions, setShowOptions] = useState(false);
@@ -62,20 +91,35 @@ export function ConversionPanel() {
     setSelectedPreset(null);
   }, [activeCategory]);
 
+  // Scoped to the active category so the panel always reflects the same
+  // set of files the left-nav/FileList is currently showing (Step 3
+  // manual-test fix, finding #5) - see getFilesToConvert's doc comment.
+  const filesToConvert = getFilesToConvert({ files, selectedFiles, activeCategory });
+
+  // Format-sync fix pass (finding #1): the value this panel displays and
+  // highlights as "the" target format is resolved the exact same way
+  // convertFiles resolves it for execution - per-file `outputFormat` first,
+  // `globalOutputFormat` as fallback. Selecting a format here writes it to
+  // every file currently in scope (setOutputFormatForFiles) instead of only
+  // to `globalOutputFormat`, so the FileCard picker sitting next to each
+  // file reflects the change immediately with no separate sync step.
+  const selectedTargetFormat = commonOutputFormat(filesToConvert, globalOutputFormat);
+
+  const handleSelectTargetFormat = (format: string) => {
+    setOutputFormatForFiles(filesToConvert.map((f) => f.id), format);
+    setGlobalOutputFormat(format);
+    setShowFormatDropdown(false);
+  };
+
   const handleSelectPreset = (preset: ConversionPreset) => {
     setSelectedPreset(preset);
-    setGlobalOutputFormat(preset.outputFormat);
+    handleSelectTargetFormat(preset.outputFormat);
     setQuality(preset.quality);
     if (preset.options) {
       // Apply preset options
       setShowOptions(true);
     }
   };
-
-  // Scoped to the active category so the panel always reflects the same
-  // set of files the left-nav/FileList is currently showing (Step 3
-  // manual-test fix, finding #5) - see getFilesToConvert's doc comment.
-  const filesToConvert = getFilesToConvert({ files, selectedFiles, activeCategory });
 
   const isVideoContext = filesToConvert.some((f) => f.category === "video");
 
@@ -230,11 +274,11 @@ export function ConversionPanel() {
                 whileHover={{ scale: 1.01 }}
                 whileTap={{ scale: 0.99 }}
               >
-                <span className={globalOutputFormat 
-                  ? `${isDark ? "text-white" : "text-dark-900"} font-bold tracking-wide` 
+                <span className={selectedTargetFormat
+                  ? `${isDark ? "text-white" : "text-dark-900"} font-bold tracking-wide`
                   : isDark ? "text-dark-500" : "text-dark-400 font-medium"
                 }>
-                  {globalOutputFormat ? globalOutputFormat.toUpperCase() : t("conversion.selectFormatPlaceholder")}
+                  {selectedTargetFormat ? selectedTargetFormat.toUpperCase() : t("conversion.selectFormatPlaceholder")}
                 </span>
                 <div className={`p-1 rounded-md ${isDark ? "bg-dark-700/50" : "bg-dark-100"}`}>
                   <ChevronDown
@@ -268,7 +312,7 @@ export function ConversionPanel() {
                                 ? isDark
                                   ? "text-dark-600 cursor-not-allowed opacity-50"
                                   : "text-dark-300 cursor-not-allowed opacity-50"
-                                : globalOutputFormat === format
+                                : selectedTargetFormat === format
                                   ? "bg-brand/10 text-brand font-bold"
                                   : isDark
                                     ? "text-dark-300 hover:bg-dark-700/50 hover:text-white"
@@ -276,14 +320,13 @@ export function ConversionPanel() {
                             }`}
                             onClick={() => {
                               if (blocked) return;
-                              setGlobalOutputFormat(format);
-                              setShowFormatDropdown(false);
+                              handleSelectTargetFormat(format);
                             }}
                             whileHover={blocked ? {} : { x: 2 }}
                             title={blocked ? t("workflow.engineMissingShort") : undefined}
                           >
                             <span className="uppercase tracking-wider">{format}</span>
-                            {globalOutputFormat === format && !blocked && <CheckCircle className="w-4 h-4" />}
+                            {selectedTargetFormat === format && !blocked && <CheckCircle className="w-4 h-4" />}
                           </motion.button>
                         );
                       })}
@@ -909,4 +952,4 @@ export function ConversionPanel() {
       )}
     </div>
   );
-}
+});

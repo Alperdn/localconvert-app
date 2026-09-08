@@ -1,9 +1,10 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, lazy, Suspense } from "react";
 import { Toaster } from "react-hot-toast";
 import { AnimatePresence, motion } from "framer-motion";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 
+import { useShallow } from "zustand/react/shallow";
 import { useStore } from "./store/useStore";
 import type { FileInfo } from "./store/useStore";
 import { t, translateErrorCode } from "./locales";
@@ -16,10 +17,19 @@ import { SettingsModal } from "./components/SettingsModal";
 import { SystemStatusModal } from "./components/SystemStatusModal";
 import { ToolsSetupModal } from "./components/ToolsSetupModal";
 import { ImagePreviewModal } from "./components/ImagePreviewModal";
-import { PdfEditor } from "./components/PdfEditor";
 import { VideoTrimmer } from "./components/VideoTrimmer";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { playCompletionSound } from "./utils/sounds";
+
+// Step 3 perf pass (section F): PdfEditor was a static import, so its
+// dependency graph (pdf-lib, pdfjs-dist, fabric - ~700KB gzipped combined,
+// per the `npm run build` chunk report) was fetched and parsed as part of
+// the app's initial load even though the editor only opens from an
+// explicit "Edit PDF" click and is otherwise not on the startup path.
+// `lazy()` defers that fetch until `pdfEditorFile` is actually set.
+const PdfEditor = lazy(() =>
+  import("./components/PdfEditor").then((m) => ({ default: m.PdfEditor }))
+);
 
 interface DragDropPayload {
   paths: string[];
@@ -27,14 +37,51 @@ interface DragDropPayload {
 }
 
 function App() {
-  const { files, checkTools, settings, addFiles, isConverting, pdfEditorFile, closePdfEditor, videoTrimmerFile, closeVideoTrimmer, loadCapabilities } = useStore();
+  // Step 3 perf pass (section D): narrowed from a full `useStore()` - App
+  // wraps everything, and its children that take no props (Sidebar,
+  // FileList, ConversionPanel) are now `React.memo`'d, so keeping App's
+  // own re-render frequency down actually matters for them again (a memo'd
+  // child still gets re-invoked if its memo-less parent hands it new JSX
+  // for an unrelated reason on every render... in this app's case it
+  // doesn't, since those three take zero props, but narrowing here still
+  // avoids re-running App's own body - the drag-drop listener setup,
+  // startup-file loading, the completion-sound effect, and the dropzone
+  // vs. filelist AnimatePresence swap - for state changes App doesn't
+  // actually care about, e.g. a settings field it never reads).
+  const {
+    files,
+    checkTools,
+    theme,
+    playCompletionSound: playCompletionSoundSetting,
+    addFiles,
+    isConverting,
+    pdfEditorFile,
+    closePdfEditor,
+    videoTrimmerFile,
+    closeVideoTrimmer,
+    loadCapabilities,
+    detectGpu,
+  } = useStore(
+    useShallow((s) => ({
+      files: s.files,
+      checkTools: s.checkTools,
+      theme: s.settings.theme,
+      playCompletionSound: s.settings.playCompletionSound,
+      addFiles: s.addFiles,
+      isConverting: s.isConverting,
+      pdfEditorFile: s.pdfEditorFile,
+      closePdfEditor: s.closePdfEditor,
+      videoTrimmerFile: s.videoTrimmerFile,
+      closeVideoTrimmer: s.closeVideoTrimmer,
+      loadCapabilities: s.loadCapabilities,
+      detectGpu: s.detectGpu,
+    }))
+  );
   const [showSettings, setShowSettings] = useState(false);
   const [showSystemStatus, setShowSystemStatus] = useState(false);
   const [showTools, setShowTools] = useState(false);
   const prevConvertingRef = useRef(isConverting);
 
-  const { detectGpu } = useStore();
-  
   // Enable keyboard shortcuts
   useKeyboardShortcuts();
 
@@ -44,13 +91,13 @@ function App() {
     prevConvertingRef.current = isConverting;
 
     // If we just finished converting and sound is enabled
-    if (wasConverting && !isConverting && settings.playCompletionSound) {
+    if (wasConverting && !isConverting && playCompletionSoundSetting) {
       const completedFiles = files.filter((f) => f.status === "completed");
       if (completedFiles.length > 0) {
         playCompletionSound();
       }
     }
-  }, [isConverting, files, settings.playCompletionSound]);
+  }, [isConverting, files, playCompletionSoundSetting]);
 
   // Theme (including "system" OS-preference resolution and live updates)
   // is applied to <html class="dark"> centrally in useStore.ts, where the
@@ -138,16 +185,33 @@ function App() {
     loadStartupFiles();
   }, [checkTools, detectGpu, addFiles, loadCapabilities]);
 
-  const isDark = settings.theme === "dark";
+  const isDark = theme === "dark";
 
   return (
-    <div className={`h-screen w-screen overflow-hidden flex flex-col transition-all duration-500 ${
+    <div className={`h-screen w-screen overflow-hidden flex flex-col transition-colors duration-500 ${
       isDark ? "bg-dark-gradient text-dark-100" : "bg-light-gradient text-dark-900"
     }`}>
-      {/* Decorative background blur blobs */}
+      {/* Decorative background blur blobs. These sit behind every
+          `glass-panel`/`glass-panel-heavy` element (Sidebar, FileList,
+          ConversionPanel, Header), which all use `backdrop-filter` - that
+          forces the browser to resample whatever is visually behind them
+          on every frame the backdrop actually changes. An infinite opacity
+          pulse under a large `filter: blur()` is exactly that: continuous,
+          full-screen, forever, even with the app otherwise idle. That
+          backdrop-filter recompute cost is very likely the dominant cause
+          of the reported idle sluggishness/hover lag (Step 3 perf pass,
+          section F) - kept the animation (still ambient/soft), but roughly
+          halved the blur radius (blur cost scales with radius^2) and
+          slowed the cycle to reduce how often that recompute happens. */}
       <div className="absolute top-0 left-0 w-full h-full overflow-hidden pointer-events-none z-0">
-        <div className={`absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full mix-blend-screen filter blur-[100px] opacity-30 animate-pulse-slow ${isDark ? 'bg-accent-900' : 'bg-accent-100'}`}></div>
-        <div className={`absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] rounded-full mix-blend-screen filter blur-[120px] opacity-20 animate-pulse-slow ${isDark ? 'bg-dark-700' : 'bg-dark-200'}`} style={{ animationDelay: '2s' }}></div>
+        <div
+          className={`absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full mix-blend-screen filter blur-[56px] opacity-30 animate-pulse-slow ${isDark ? 'bg-accent-900' : 'bg-accent-100'}`}
+          style={{ animationDuration: "6s" }}
+        ></div>
+        <div
+          className={`absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] rounded-full mix-blend-screen filter blur-[64px] opacity-20 animate-pulse-slow ${isDark ? 'bg-dark-700' : 'bg-dark-200'}`}
+          style={{ animationDuration: "6s", animationDelay: '2s' }}
+        ></div>
       </div>
 
       <div className="relative z-10 flex flex-col h-full w-full">
@@ -254,15 +318,17 @@ function App() {
       {/* Image Preview Modal - manages its own visibility via store */}
       <ImagePreviewModal />
 
-      {/* PDF Editor Modal */}
+      {/* PDF Editor Modal - lazy-loaded, see the PdfEditor import above */}
       <AnimatePresence>
         {pdfEditorFile && (
-          <PdfEditor
-            filePath={pdfEditorFile.path}
-            fileName={pdfEditorFile.name}
-            onClose={closePdfEditor}
-            isDark={isDark}
-          />
+          <Suspense fallback={null}>
+            <PdfEditor
+              filePath={pdfEditorFile.path}
+              fileName={pdfEditorFile.name}
+              onClose={closePdfEditor}
+              isDark={isDark}
+            />
+          </Suspense>
         )}
       </AnimatePresence>
 

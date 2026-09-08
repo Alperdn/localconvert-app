@@ -1,14 +1,21 @@
-import { useCallback, useMemo } from "react";
+import { memo, useCallback, useMemo } from "react";
 import { motion, AnimatePresence, Reorder } from "framer-motion";
 import { Plus, Trash2, CheckSquare, Square, Upload, GripVertical, Layers } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
+import { useShallow } from "zustand/react/shallow";
 import { useStore } from "../store/useStore";
 import { FileCard } from "./FileCard";
 import type { FileInfo, ConversionFile } from "../store/useStore";
 import { t } from "../locales";
 
-export function FileList() {
+// Step 3 perf pass (section D): takes no props - React.memo means FileList
+// only re-renders from its own narrowed store subscription, not merely
+// because App.tsx re-rendered for something unrelated.
+export const FileList = memo(function FileList() {
+  // Step 3 perf pass (section D): narrowed from a full `useStore()` -
+  // FileList renders the whole file grid, so an unnecessary re-render here
+  // is one of the more expensive ones in the app.
   const {
     files,
     activeCategory,
@@ -18,10 +25,22 @@ export function FileList() {
     clearFiles,
     addFiles,
     reorderFiles,
-    settings,
-  } = useStore();
+    theme,
+  } = useStore(
+    useShallow((s) => ({
+      files: s.files,
+      activeCategory: s.activeCategory,
+      selectedFiles: s.selectedFiles,
+      selectAllFiles: s.selectAllFiles,
+      deselectAllFiles: s.deselectAllFiles,
+      clearFiles: s.clearFiles,
+      addFiles: s.addFiles,
+      reorderFiles: s.reorderFiles,
+      theme: s.settings.theme,
+    }))
+  );
 
-  const isDark = settings.theme === "dark";
+  const isDark = theme === "dark";
 
   // For reordering, we need to work with the full files array
   const filteredFiles = useMemo(() => 
@@ -220,4 +239,4 @@ export function FileList() {
       </AnimatePresence>
     </div>
   );
-}
+});

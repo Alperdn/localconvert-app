@@ -407,6 +407,7 @@ interface Store {
   selectAllFiles: () => void;
   deselectAllFiles: () => void;
   setFileOutputFormat: (id: string, format: string) => void;
+  setOutputFormatForFiles: (ids: string[], format: string) => void;
   setFileStatus: (
     id: string,
     status: ConversionFile["status"],
@@ -497,6 +498,37 @@ export function getFilesToConvert(state: {
       : state.files.filter((f) => f.status === "pending");
 
   return pool.filter(inCategory);
+}
+
+// ── Single source of truth for "what target format is this file actually
+// going to convert to" (Step 3 format-sync fix pass, finding #1) ─────────
+// `file.outputFormat` (per-file, set from the FileCard picker) always wins
+// when present; `globalOutputFormat` is only a fallback default for a file
+// that has no explicit choice yet. This exact fallback already governed
+// which format `convertFiles` actually sent to the backend - the bug was
+// that ConversionPanel's picker displayed/wrote `globalOutputFormat`
+// directly instead of resolving through this same rule, so it could show
+// a stale/different value than the FileCard sitting right next to it.
+export function resolveOutputFormat(
+  file: Pick<ConversionFile, "outputFormat">,
+  globalOutputFormat: string | null
+): string | null {
+  return file.outputFormat || globalOutputFormat;
+}
+
+/**
+ * The format ConversionPanel should display/highlight as "selected" for the
+ * current batch: the resolved format shared by every file in scope, or
+ * `null` if the batch is empty or the files don't agree (e.g. one file's
+ * per-file choice was changed independently) - never silently picks one.
+ */
+export function commonOutputFormat(
+  files: Pick<ConversionFile, "outputFormat">[],
+  globalOutputFormat: string | null
+): string | null {
+  if (files.length === 0) return globalOutputFormat;
+  const resolved = new Set(files.map((f) => resolveOutputFormat(f, globalOutputFormat)));
+  return resolved.size === 1 ? [...resolved][0] : null;
 }
 
 export const useStore = create<Store>((set, get) => ({
@@ -616,6 +648,20 @@ export const useStore = create<Store>((set, get) => ({
     set((state) => ({
       files: state.files.map((f) =>
         f.id === id ? { ...f, outputFormat: format } : f
+      ),
+    }));
+  },
+
+  // Step 3 format-sync fix pass (finding #1/A): the ConversionPanel's
+  // shared format picker applies to every file currently in scope in one
+  // batched update, rather than N sequential setFileOutputFormat calls
+  // (N re-renders) or a second, independent "globalOutputFormat is the
+  // real value" state that FileCard has to be kept in sync with.
+  setOutputFormatForFiles: (ids, format) => {
+    const idSet = new Set(ids);
+    set((state) => ({
+      files: state.files.map((f) =>
+        idSet.has(f.id) ? { ...f, outputFormat: format } : f
       ),
     }));
   },

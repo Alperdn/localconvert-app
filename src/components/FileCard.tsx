@@ -25,9 +25,10 @@ import {
   Edit3,
   Scissors,
 } from "lucide-react";
-import { useState, useEffect } from "react";
+import { memo, useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import toast from "react-hot-toast";
+import { useShallow } from "zustand/react/shallow";
 import { useStore, ConversionFile } from "../store/useStore";
 import { t, describeUnavailableCapability, translateErrorCode } from "../locales";
 import { formatFileSize, getOutputFormats } from "../types/formats";
@@ -106,7 +107,24 @@ interface FileCardProps {
   file: ConversionFile;
 }
 
-export function FileCard({ file }: FileCardProps) {
+// Step 3 perf pass (section D/E): the store keeps a stable object reference
+// for every file that a `files` update doesn't touch (see `.map()` in
+// setFileStatus/setFileOutputFormat/etc. - only the matching id gets a new
+// object). That means memo's default shallow-prop comparison on `file`
+// actually works: when FileList re-renders because ONE file's status
+// changed, every OTHER FileCard now skips re-rendering instead of being
+// re-invoked just because its parent did (this was the direct mechanism
+// behind manual test finding "completed-file state making navigation
+// sluggish" with several files loaded).
+export const FileCard = memo(function FileCard({ file }: FileCardProps) {
+  // Step 3 perf pass (section D): FileCard is rendered once per queued
+  // file. A plain `useStore()` subscribes to the whole store, so with N
+  // files loaded, every unrelated state change (another file's progress
+  // tick, a capability load, a settings toggle) re-rendered N cards
+  // instead of just the one that actually changed - the more files in the
+  // list, the worse navigation/hover felt (matches manual test finding
+  // "completed-file state making navigation sluggish"). A narrow
+  // `useShallow` selector keeps each card isolated to the fields it uses.
   const {
     removeFile,
     selectFile,
@@ -114,16 +132,37 @@ export function FileCard({ file }: FileCardProps) {
     selectedFiles,
     setFileOutputFormat,
     globalOutputFormat,
-    settings,
+    theme,
+    defaultQuality,
     setPreviewImageId,
     openPdfEditor,
     openVideoTrimmer,
     getCapability,
-  } = useStore();
+  } = useStore(
+    useShallow((s) => ({
+      removeFile: s.removeFile,
+      selectFile: s.selectFile,
+      deselectFile: s.deselectFile,
+      selectedFiles: s.selectedFiles,
+      setFileOutputFormat: s.setFileOutputFormat,
+      globalOutputFormat: s.globalOutputFormat,
+      theme: s.settings.theme,
+      defaultQuality: s.settings.defaultQuality,
+      setPreviewImageId: s.setPreviewImageId,
+      openPdfEditor: s.openPdfEditor,
+      openVideoTrimmer: s.openVideoTrimmer,
+      getCapability: s.getCapability,
+      // Must stay in the subscribed slice (even though only read
+      // indirectly via getCapability) so the card re-renders once
+      // loadCapabilities() resolves - see the ConversionPanel selector's
+      // comment for why this matters for the capability gate.
+      capabilities: s.capabilities,
+    }))
+  );
   const [showFormats, setShowFormats] = useState(false);
   const [imageError, setImageError] = useState(false);
   const [estimatedSize, setEstimatedSize] = useState<number | null>(null);
-  const isDark = settings.theme === "dark";
+  const isDark = theme === "dark";
 
   // Fetch size estimate when output format changes
   const currentFormat = file.outputFormat || globalOutputFormat;
@@ -132,14 +171,14 @@ export function FileCard({ file }: FileCardProps) {
       invoke<number>("get_file_size_estimate", {
         inputPath: file.path,
         outputFormat: currentFormat,
-        quality: settings.defaultQuality,
+        quality: defaultQuality,
       })
         .then(setEstimatedSize)
         .catch(() => setEstimatedSize(null));
     } else {
       setEstimatedSize(null);
     }
-  }, [currentFormat, file.path, file.status, settings.defaultQuality]);
+  }, [currentFormat, file.path, file.status, defaultQuality]);
 
   const handleOpenFileLocation = async (path: string) => {
     try {
@@ -540,4 +579,4 @@ export function FileCard({ file }: FileCardProps) {
       )}
     </div>
   );
-}
+});

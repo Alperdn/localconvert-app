@@ -25,8 +25,6 @@ import {
   FileType,
   Terminal,
   MousePointer,
-  Eye,
-  EyeOff,
   Code,
 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -358,23 +356,6 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                   </motion.button>
                 )}
               </div>
-            </SettingRow>
-
-            {/* Privacy Badge */}
-            <SettingRow
-              icon={localSettings.showPrivacyBadge ? Eye : EyeOff}
-              title={t("settings.privacyBadgeTitle")}
-              description={t("settings.privacyBadgeDescription")}
-            >
-              <Toggle
-                enabled={localSettings.showPrivacyBadge}
-                onChange={() =>
-                  setLocalSettings((s) => ({
-                    ...s,
-                    showPrivacyBadge: !s.showPrivacyBadge,
-                  }))
-                }
-              />
             </SettingRow>
 
             {/* Output Filename Template */}

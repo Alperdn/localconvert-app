@@ -60,3 +60,28 @@ export function isCapabilityUsable(capability: Capability | undefined): boolean 
   if (!capability) return true;
   return capability.state === "AVAILABLE";
 }
+
+/**
+ * The single source of truth for "is ANY of these files blocked by a
+ * not-yet-available engine". Every entry point that can trigger a real
+ * conversion (the Convert button, the Enter keyboard shortcut, the
+ * convertFiles store action itself as defense-in-depth) MUST run this same
+ * check before a process can be spawned - Step 3 manual testing found the
+ * Enter shortcut bypassed the button's guard entirely, letting an Office
+ * conversion start with no engine available. Recomputed fresh from the
+ * current file list and current capabilities on every call - never cache
+ * the result, since a stale cached "blocked" value is exactly what caused
+ * the video/image cross-contamination bug (Step 3 finding #5).
+ */
+export function getBlockedCapability(
+  files: Pick<ConversionFile, "category" | "extension">[],
+  getCapability: (id: string) => Capability | undefined
+): Capability | undefined {
+  for (const file of files) {
+    const capId = capabilityIdForFile(file);
+    if (!capId) continue;
+    const cap = getCapability(capId);
+    if (!isCapabilityUsable(cap)) return cap;
+  }
+  return undefined;
+}

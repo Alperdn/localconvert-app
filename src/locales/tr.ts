@@ -32,11 +32,8 @@ const tr = {
     close: "Kapat",
   },
   privacy: {
-    localBadge: "%100 Yerel İşlem",
     title: "Önce Gizlilik",
     description: "Tüm dosya dönüştürmeleri cihazınızda gerçekleşir. Dosyalarınız cihazınızdan çıkmaz.",
-    networkOff: "Ağ: Kapalı",
-    statusHint: "Tam durum için başlıktaki kalkan simgesine bakın.",
   },
   workflow: {
     selectFile: "Dosya Seç",
@@ -205,8 +202,6 @@ const tr = {
     themeDescription: "Koyu, açık ya da sistem ayarınızı takip eden temayı seçin",
     followsOS: "İşletim sisteminizin açık/koyu ayarını takip eder",
     preserveMetadataDescription: "EXIF verisi, tarihler ve diğer dosya bilgilerini koru (yalnızca desteklenen işlemlerde)",
-    privacyBadgeTitle: "Gizlilik Rozeti",
-    privacyBadgeDescription: "Başlıkta '%100 Yerel İşlem' göstergesini göster",
     completionSound: "Tamamlanma Sesi",
     completionSoundDescription: "Dönüştürme bittiğinde bir ses çal",
     test: "Test",

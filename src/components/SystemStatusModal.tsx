@@ -143,6 +143,14 @@ export function SystemStatusModal({ onClose, isDark }: SystemStatusModalProps) {
 
           {status && (
             <>
+              {/* Step 3 manual-test fix (finding #2): this is the detailed
+                  privacy surface the always-visible header badge used to
+                  duplicate. The badge is gone; this description (and the
+                  status rows below) is now the one place this claim is
+                  made, backed by the actual system_status read below it. */}
+              <p className={`text-sm leading-relaxed pb-3 border-b ${isDark ? "text-dark-300 border-dark-700/50" : "text-dark-600 border-dark-100"}`}>
+                {t("privacy.description")}
+              </p>
               <StatusRow
                 icon={WifiOff}
                 label={t("systemStatus.networkDependentConversion")}

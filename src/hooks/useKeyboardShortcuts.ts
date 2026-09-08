@@ -1,12 +1,16 @@
 import { useEffect, useCallback } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
-import { useStore, FileInfo } from "../store/useStore";
+import toast from "react-hot-toast";
+import { useStore, FileInfo, getFilesToConvert } from "../store/useStore";
+import { getBlockedCapability } from "../utils/capabilityGating";
+import { describeUnavailableCapability } from "../locales";
 
 export function useKeyboardShortcuts() {
   const {
     files,
     selectedFiles,
+    activeCategory,
     selectAllFiles,
     deselectAllFiles,
     removeFile,
@@ -16,6 +20,7 @@ export function useKeyboardShortcuts() {
     cancelConversion,
     addFiles,
     globalOutputFormat,
+    getCapability,
   } = useStore();
 
   const handleOpenFiles = useCallback(async () => {
@@ -118,9 +123,19 @@ export function useKeyboardShortcuts() {
 
       // Enter: Start conversion
       if (event.key === "Enter" && !isConverting && files.length > 0) {
-        const filesToConvert = selectedFiles.length > 0
-          ? files.filter((f) => selectedFiles.includes(f.id) && f.status === "pending")
-          : files.filter((f) => f.status === "pending");
+        const filesToConvert = getFilesToConvert({ files, selectedFiles, activeCategory });
+
+        // Same pre-execution capability gate as the Convert button (Step 3,
+        // section E) - this shortcut used to call convertFiles() straight
+        // away with no capability check at all, so pressing Enter with an
+        // Office file queued and no Office engine available would spawn a
+        // real conversion process and only fail afterward.
+        const blockedCapability = getBlockedCapability(filesToConvert, getCapability);
+        if (blockedCapability) {
+          event.preventDefault();
+          toast.error(describeUnavailableCapability(blockedCapability));
+          return;
+        }
 
         const canConvert = filesToConvert.every(
           (f) => f.outputFormat || globalOutputFormat
@@ -143,6 +158,7 @@ export function useKeyboardShortcuts() {
     [
       files,
       selectedFiles,
+      activeCategory,
       selectAllFiles,
       deselectAllFiles,
       removeFile,
@@ -152,6 +168,7 @@ export function useKeyboardShortcuts() {
       cancelConversion,
       handleOpenFiles,
       globalOutputFormat,
+      getCapability,
     ]
   );
 

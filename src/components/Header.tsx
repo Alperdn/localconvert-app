@@ -2,7 +2,6 @@ import { motion } from "framer-motion";
 import { Settings, ShieldCheck, Wrench, Zap, Minus, Square, X } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useStore } from "../store/useStore";
-import { PrivacyBadge } from "./PrivacyBadge";
 import { t } from "../locales";
 
 interface HeaderProps {
@@ -36,11 +35,6 @@ export function Header({ onSettingsClick, onPrivacyClick, onToolsClick, onHelpCl
         <span className={`text-sm font-semibold tracking-wide pointer-events-none ${isDark ? "text-white" : "text-dark-900"}`}>
           Local<span className="text-brand">Convert</span>
         </span>
-        
-        {/* Privacy Badge */}
-        <div className="ml-4">
-          <PrivacyBadge />
-        </div>
       </div>
 
       {/* Right side controls */}

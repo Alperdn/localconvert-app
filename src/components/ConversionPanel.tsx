@@ -20,16 +20,17 @@ import {
 } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import toast from "react-hot-toast";
-import { useStore, ConversionPreset, GpuInfo } from "../store/useStore";
+import { useStore, ConversionPreset, GpuInfo, getFilesToConvert } from "../store/useStore";
 import { t, translateCapabilityState, describeUnavailableCapability } from "../locales";
 import { getOutputFormats } from "../types/formats";
 import { PresetsSelector } from "./PresetsSelector";
-import { capabilityIdForFile, capabilityIdForOutputFormat, isCapabilityUsable } from "../utils/capabilityGating";
+import { capabilityIdForOutputFormat, getBlockedCapability, isCapabilityUsable } from "../utils/capabilityGating";
 
 export function ConversionPanel() {
   const {
     files,
     selectedFiles,
+    activeCategory,
     convertFiles,
     cancelConversion,
     settings,
@@ -53,6 +54,14 @@ export function ConversionPanel() {
       .catch(console.error);
   }, []);
 
+  // Step 3 manual-test fix (finding #5/C): a preset picked for the
+  // previous category (e.g. "YouTube Upload" while on Video) has no
+  // meaning once the user switches category - drop the stale indicator
+  // instead of leaving it displayed for an unrelated operation.
+  useEffect(() => {
+    setSelectedPreset(null);
+  }, [activeCategory]);
+
   const handleSelectPreset = (preset: ConversionPreset) => {
     setSelectedPreset(preset);
     setGlobalOutputFormat(preset.outputFormat);
@@ -63,9 +72,10 @@ export function ConversionPanel() {
     }
   };
 
-  const filesToConvert = selectedFiles.length > 0
-    ? files.filter((f) => selectedFiles.includes(f.id) && f.status === "pending")
-    : files.filter((f) => f.status === "pending");
+  // Scoped to the active category so the panel always reflects the same
+  // set of files the left-nav/FileList is currently showing (Step 3
+  // manual-test fix, finding #5) - see getFilesToConvert's doc comment.
+  const filesToConvert = getFilesToConvert({ files, selectedFiles, activeCategory });
 
   const isVideoContext = filesToConvert.some((f) => f.category === "video");
 
@@ -108,9 +118,7 @@ export function ConversionPanel() {
   // must be gated BEFORE the backend ever spawns a process, not discovered
   // via a failed conversion. `blockedCapability` is the first
   // non-AVAILABLE capability found among the queued files, if any.
-  const blockedCapability = filesToConvert
-    .map((f) => getCapability(capabilityIdForFile(f) ?? ""))
-    .find((cap) => !isCapabilityUsable(cap));
+  const blockedCapability = getBlockedCapability(filesToConvert, getCapability);
 
   const canConvert =
     filesToConvert.length > 0 &&

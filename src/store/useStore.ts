@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
+import { capabilityIdForFile, isCapabilityUsable } from "../utils/capabilityGating";
 
 // Image extensions that can be previewed
 const PREVIEWABLE_IMAGE_EXTENSIONS = [
@@ -144,7 +145,6 @@ export interface Settings {
   maxParallelConversions: number;
   // New settings
   playCompletionSound: boolean;
-  showPrivacyBadge: boolean;
   outputFilenameTemplate: string;
   watchFolders: string[];
   contextMenuEnabled: boolean;
@@ -471,6 +471,34 @@ interface Store {
 
 const generateId = () => Math.random().toString(36).substring(2, 15);
 
+// ── Single source of truth for "which files does the right-hand
+// ConversionPanel currently operate on" (Step 3 manual-test fix pass,
+// finding #5) ────────────────────────────────────────────────────────────
+// Previously ConversionPanel/useKeyboardShortcuts/convertFiles each
+// re-derived this independently from `files` + `selectedFiles`, entirely
+// ignoring `activeCategory`. That let a blocked capability from a file in
+// one category (e.g. a video with ENGINE_MISSING) keep blocking conversion
+// of files in a different, unrelated category (e.g. PNG->JPEG) after the
+// user switched the left-nav category, because the batch never actually
+// changed - only the *visible* FileList did. Scoping this helper to
+// `activeCategory` keeps the right panel and the left nav showing the same
+// set of files at all times.
+export function getFilesToConvert(state: {
+  files: ConversionFile[];
+  selectedFiles: string[];
+  activeCategory: Category;
+}): ConversionFile[] {
+  const inCategory = (f: ConversionFile) =>
+    state.activeCategory === "all" || f.category === state.activeCategory;
+
+  const pool =
+    state.selectedFiles.length > 0
+      ? state.files.filter((f) => state.selectedFiles.includes(f.id) && f.status === "pending")
+      : state.files.filter((f) => f.status === "pending");
+
+  return pool.filter(inCategory);
+}
+
 export const useStore = create<Store>((set, get) => ({
   // Files
   files: [],
@@ -607,6 +635,17 @@ export const useStore = create<Store>((set, get) => ({
             }
           : f
       ),
+      // Step 3 manual-test fix (finding #6): once a file leaves "pending"
+      // (completed or errored), drop it from the explicit selection too.
+      // Otherwise a stale non-empty `selectedFiles` kept forcing
+      // `getFilesToConvert` into "selection-only" mode, which silently
+      // excluded every newly-added file (never selected) from the next
+      // batch - the user had no way to start a new conversion without
+      // pressing "Temizle" to reset selection entirely.
+      selectedFiles:
+        status === "completed" || status === "error"
+          ? state.selectedFiles.filter((fid) => fid !== id)
+          : state.selectedFiles,
     }));
   },
 
@@ -616,7 +655,19 @@ export const useStore = create<Store>((set, get) => ({
 
   // Category
   activeCategory: "all",
-  setActiveCategory: (category) => set({ activeCategory: category }),
+  setActiveCategory: (category) =>
+    set((state) => ({
+      activeCategory: category,
+      // Step 3 manual-test fix (finding #5/C): a target format chosen for
+      // the previous category is almost never valid for the new one (e.g.
+      // "mp4" selected while on Video, then switching to Image) - clear it
+      // so the format picker can't silently keep an invalid stale value.
+      // Per-file `outputFormat` selections are untouched: they belong to
+      // the file, not the category, and files outside the new category
+      // simply aren't part of `getFilesToConvert` until switched back to.
+      globalOutputFormat:
+        category !== state.activeCategory ? null : state.globalOutputFormat,
+    })),
 
   // Tools
   tools: [],
@@ -679,13 +730,22 @@ export const useStore = create<Store>((set, get) => ({
   currentJobId: null,
 
   convertFiles: async (options = {}) => {
-    const { files, selectedFiles, settings, globalOutputFormat, setFileStatus } =
+    const { settings, globalOutputFormat, setFileStatus, getCapability } =
       get();
 
-    // Get pending files to convert (exclude already converting files)
-    const filesToConvert = selectedFiles.length > 0
-      ? files.filter((f) => selectedFiles.includes(f.id) && f.status === "pending")
-      : files.filter((f) => f.status === "pending");
+    // Scoped to the active category, same as ConversionPanel/keyboard
+    // shortcut - see getFilesToConvert's doc comment (Step 3 finding #5).
+    const candidateFiles = getFilesToConvert(get());
+
+    // Defense in depth (Step 3, section E): never rely solely on a
+    // disabled button or a keyboard-shortcut guard to keep a blocked file
+    // from reaching a real process spawn. Any file whose capability isn't
+    // AVAILABLE is dropped here unconditionally, no matter how this action
+    // was triggered.
+    const filesToConvert = candidateFiles.filter((f) => {
+      const capId = capabilityIdForFile(f);
+      return !capId || isCapabilityUsable(getCapability(capId));
+    });
 
     if (filesToConvert.length === 0) return;
 
@@ -886,7 +946,6 @@ export const useStore = create<Store>((set, get) => ({
     parallelProcessing: true,
     maxParallelConversions: 4,
     playCompletionSound: true,
-    showPrivacyBadge: true,
     outputFilenameTemplate: "{name}_{preset}",
     watchFolders: [],
     contextMenuEnabled: false,

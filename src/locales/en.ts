@@ -33,11 +33,8 @@ const en = {
     close: "Close",
   },
   privacy: {
-    localBadge: "100% Local Processing",
     title: "Privacy First",
     description: "All file conversions happen on your device. Your files never leave your device.",
-    networkOff: "Network: Off",
-    statusHint: "See the shield icon in the header for the full status.",
   },
   workflow: {
     selectFile: "Select File",
@@ -206,8 +203,6 @@ const en = {
     themeDescription: "Choose dark, light, or follow your system setting",
     followsOS: "Follows your operating system's light/dark setting",
     preserveMetadataDescription: "Keep EXIF data, dates, and other file information (supported operations only)",
-    privacyBadgeTitle: "Privacy Badge",
-    privacyBadgeDescription: "Show '100% Local Processing' indicator in header",
     completionSound: "Completion Sound",
     completionSoundDescription: "Play a sound when conversions finish",
     test: "Test",

@@ -51,15 +51,21 @@ impl EngineId {
         }
     }
 
-    /// The executable file name this engine would have inside a bundled
-    /// engine directory, per platform.
+    /// The executable's path *relative to* `engines/<bundle_dir_name()>/`
+    /// (not necessarily a bare filename - Office's real bundled payload
+    /// nests `soffice.exe` under `LibreOffice/program/`, matching the
+    /// layout LibreOffice's own installer produces and that
+    /// `office_manifest::OfficeManifest::executable_relative_path` (Step
+    /// 4's manifest) also names; keeping both in agreement is exactly
+    /// what `office_manifest::self_check`'s final cross-check against
+    /// `resolver::is_available` exists to catch).
     pub fn bundled_exe_name(self) -> &'static str {
         match self {
             EngineId::Office => {
                 if cfg!(windows) {
-                    "soffice.exe"
+                    "LibreOffice/program/soffice.exe"
                 } else {
-                    "soffice"
+                    "LibreOffice/program/soffice"
                 }
             }
             EngineId::Ffmpeg => {

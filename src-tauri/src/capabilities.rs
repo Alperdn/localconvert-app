@@ -10,6 +10,7 @@
 //! This module does not yet drive any UI (Phase 2 work) - it establishes
 //! the backend contract first.
 
+use crate::engines::office_manifest::{self, OfficeEngineStatus};
 use crate::engines::{engine_id::EngineId, resolver};
 use crate::tools;
 use serde::Serialize;
@@ -43,7 +44,13 @@ fn capability(id: &str, state: CapabilityState, message: &str) -> Capability {
 /// Pure, synchronous computation so it's directly unit-testable without a
 /// Tauri runtime. The `#[tauri::command]` wrapper below just calls this.
 pub fn compute_capabilities() -> Vec<Capability> {
-    let office_available = resolver::is_available(EngineId::Office);
+    // office_to_pdf is AVAILABLE only when the bundled Office Engine
+    // passes its full self-check (manifest present, version/architecture
+    // pinned match, required resource dirs present) - not merely because
+    // an executable happens to exist at the expected path. See
+    // `engines::office_manifest::self_check`.
+    let office_report = office_manifest::self_check();
+    let office_available = office_report.status == OfficeEngineStatus::Available;
     let ffmpeg_available = resolver::is_available(EngineId::Ffmpeg);
     let magick_available = tools::check_tool_installed("magick").installed;
 
@@ -120,7 +127,7 @@ pub fn compute_capabilities() -> Vec<Capability> {
             if office_available {
                 "Convert Office documents to PDF."
             } else {
-                "Office conversion engine is not available on this installation."
+                office_report.message.as_str()
             },
         ),
         capability(

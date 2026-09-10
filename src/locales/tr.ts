@@ -26,7 +26,6 @@ const tr = {
     conversionTools: "Dönüştürme Araçları",
     privacyAndStatus: "Gizlilik ve Sistem Durumu",
     settings: "Ayarlar",
-    help: "Yardım",
     minimize: "Küçült",
     maximize: "Büyüt",
     close: "Kapat",

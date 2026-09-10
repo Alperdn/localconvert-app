@@ -23,6 +23,7 @@ use super::error::EngineError;
 use super::resolver::ResolvedEngine;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -69,6 +70,7 @@ pub fn build_command(resolved: &ResolvedEngine, args: &[String], job_dir: &Path)
 /// duration of this call and are never written to disk or logged
 /// persistently - only attached as `technical_detail` on failure, which
 /// `EngineError::Display` never surfaces.
+#[allow(dead_code)]
 pub fn run(resolved: &ResolvedEngine, args: &[String], job_dir: &Path) -> Result<(), EngineError> {
     let output = build_command(resolved, args, job_dir).output().map_err(|e| {
         EngineError::process_failed(
@@ -93,12 +95,105 @@ pub fn run(resolved: &ResolvedEngine, args: &[String], job_dir: &Path) -> Result
     }
 }
 
+/// Same contract as `run`, but bounds the child process to `timeout` wall
+/// clock. If the deadline is exceeded, the child is killed and reaped
+/// (never left as a zombie/orphan) and the caller gets a structured
+/// `EngineError::timeout` instead of hanging indefinitely.
+///
+/// This kills only the direct child process, not a full process tree. On
+/// Windows, `soffice.exe` is itself the long-running process for a
+/// headless `--convert-to` invocation in the common case, so this covers
+/// the invocation this app makes - but it is not a general subprocess-tree
+/// sandbox. See `docs/OFFICE_ENGINE.md` "Known limitations" for the
+/// documented residual risk and the Windows Job Object hardening this
+/// would need for a stronger guarantee.
+pub fn run_with_timeout(
+    resolved: &ResolvedEngine,
+    args: &[String],
+    job_dir: &Path,
+    timeout: Duration,
+) -> Result<(), EngineError> {
+    // Not draining stdout/stderr while polling risks a pipe-buffer
+    // deadlock for a process that writes a lot of output before exiting.
+    // Acceptable here: headless `soffice --convert-to` produces minimal
+    // stdout/stderr for the inputs this app sends it. A chattier future
+    // engine on this path would need a background reader thread instead.
+    let mut child = build_command(resolved, args, job_dir).spawn().map_err(|e| {
+        EngineError::process_failed(
+            resolved.id,
+            format!("{} could not be started.", resolved.id.display_name()),
+        )
+        .with_detail(e.to_string())
+    })?;
+
+    let start = Instant::now();
+    let poll_interval = Duration::from_millis(100);
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if status.success() {
+                    return Ok(());
+                }
+                let mut stderr = String::new();
+                if let Some(mut s) = child.stderr.take() {
+                    use std::io::Read;
+                    let _ = s.read_to_string(&mut stderr);
+                }
+                return Err(EngineError::process_failed(
+                    resolved.id,
+                    format!(
+                        "{} reported an error while processing this file.",
+                        resolved.id.display_name()
+                    ),
+                )
+                .with_detail(stderr));
+            }
+            Ok(None) => {
+                if start.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(EngineError::timeout(resolved.id));
+                }
+                std::thread::sleep(poll_interval);
+            }
+            Err(e) => {
+                return Err(EngineError::process_failed(
+                    resolved.id,
+                    format!("{} could not be monitored.", resolved.id.display_name()),
+                )
+                .with_detail(e.to_string()));
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::engines::engine_id::EngineId;
     use crate::engines::resolver::EngineTier;
     use std::path::PathBuf;
+
+    #[test]
+    #[cfg(windows)]
+    fn run_with_timeout_kills_a_hung_process_and_reports_timeout() {
+        // `ping` (present on every Windows install, no shell required to
+        // resolve it - `Command::new` searches PATH itself) stands in for
+        // a hung/malicious engine process here.
+        let resolved = ResolvedEngine {
+            id: EngineId::Office,
+            path: PathBuf::from("ping"),
+            tier: EngineTier::System,
+        };
+        let args = vec!["127.0.0.1".to_string(), "-n".to_string(), "30".to_string()];
+        let job_dir = std::env::temp_dir();
+        let start = std::time::Instant::now();
+        let result = run_with_timeout(&resolved, &args, &job_dir, Duration::from_millis(300));
+        assert!(start.elapsed() < Duration::from_secs(10), "timeout branch did not fire promptly");
+        let err = result.unwrap_err();
+        assert_eq!(err.code(), "OFFICE_TIMEOUT");
+    }
 
     #[test]
     fn build_command_never_touches_a_shell() {

@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, lazy, Suspense } from "react";
+import { useCallback, useEffect, useState, useRef, lazy, Suspense } from "react";
 import { Toaster } from "react-hot-toast";
 import { AnimatePresence, motion } from "framer-motion";
 import { listen } from "@tauri-apps/api/event";
@@ -81,6 +81,17 @@ function App() {
   const [showSystemStatus, setShowSystemStatus] = useState(false);
   const [showTools, setShowTools] = useState(false);
   const prevConvertingRef = useRef(isConverting);
+
+  // Header is `memo`'d (Step 3 perf pass, section D continued) so it skips
+  // re-rendering when App re-renders for unrelated reasons - e.g. the
+  // `files` subscription above updating on every conversion progress tick.
+  // That only holds if these handlers keep a stable identity across
+  // renders; without useCallback they're new closures every render and
+  // memo does nothing (manual test finding: header buttons degrading
+  // during file activity, TEST B).
+  const handleSettingsClick = useCallback(() => setShowSettings(true), []);
+  const handlePrivacyClick = useCallback(() => setShowSystemStatus(true), []);
+  const handleToolsClick = useCallback(() => setShowTools(true), []);
 
   // Enable keyboard shortcuts
   useKeyboardShortcuts();
@@ -249,10 +260,9 @@ function App() {
         {/* Header */}
         <div className="px-4 pt-4 shrink-0">
           <Header
-            onSettingsClick={() => setShowSettings(true)}
-            onPrivacyClick={() => setShowSystemStatus(true)}
-            onToolsClick={() => setShowTools(true)}
-            onHelpClick={() => setShowTools(true)}
+            onSettingsClick={handleSettingsClick}
+            onPrivacyClick={handlePrivacyClick}
+            onToolsClick={handleToolsClick}
           />
         </div>
 

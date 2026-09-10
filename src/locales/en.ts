@@ -27,7 +27,6 @@ const en = {
     conversionTools: "Conversion Tools",
     privacyAndStatus: "Privacy & System Status",
     settings: "Settings",
-    help: "Help",
     minimize: "Minimize",
     maximize: "Maximize",
     close: "Close",

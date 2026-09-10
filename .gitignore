@@ -33,3 +33,13 @@ coverage/
 # Temporary files
 *.tmp
 *.temp
+
+# Office Engine build payload (Step 4) - populated by
+# scripts/prepare-office-engine.ps1 from the pinned, hash-verified
+# LibreOffice distribution. Never commit the actual engine binaries -
+# see src-tauri/engines/office/README.md and docs/OFFICE_ENGINE.md.
+src-tauri/engines/office/manifest.json
+src-tauri/engines/office/LibreOffice/
+src-tauri/engines/office/_staging/
+THIRD_PARTY_NOTICES/LibreOffice/*
+!THIRD_PARTY_NOTICES/LibreOffice/README.md

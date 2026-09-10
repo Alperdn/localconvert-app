@@ -56,7 +56,9 @@
       "icons/icon.ico",
       "icons/icon.png"
     ],
-    "resources": [],
+    "resources": [
+      "engines/office/**/*"
+    ],
     "windows": {
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",

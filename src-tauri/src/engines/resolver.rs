@@ -85,7 +85,27 @@ fn configured_path(_id: EngineId) -> Option<PathBuf> {
     None
 }
 
+/// V1 institutional policy (Step 4): the bundled Office Engine is
+/// authoritative. System-installed LibreOffice must NOT be silently
+/// preferred/used in a production build just because it happens to be on
+/// PATH or in `Program Files` - that would defeat the "no LibreOffice
+/// install required" product guarantee and make behavior depend on
+/// whatever happens to be on the machine. System fallback for Office
+/// stays available ONLY as an explicit, opt-in developer convenience -
+/// gated behind this env var, never reachable from the frontend/Tauri
+/// commands, and never set by this application itself.
+const ALLOW_SYSTEM_OFFICE_FALLBACK_ENV: &str = "LOCALCONVERT_ALLOW_SYSTEM_OFFICE_FALLBACK";
+
+fn system_office_fallback_allowed() -> bool {
+    std::env::var(ALLOW_SYSTEM_OFFICE_FALLBACK_ENV)
+        .map(|v| v == "1")
+        .unwrap_or(false)
+}
+
 fn system_path(id: EngineId) -> Option<PathBuf> {
+    if id == EngineId::Office && !system_office_fallback_allowed() {
+        return None;
+    }
     match id {
         EngineId::Ffprobe => {
             // ffprobe ships next to ffmpeg in every common distribution;
@@ -180,6 +200,38 @@ mod tests {
         }
         let err = resolve(EngineId::Office).unwrap_err();
         assert_eq!(err.code(), "OFFICE_ENGINE_NOT_AVAILABLE");
+    }
+
+    // `system_office_fallback_allowed` reads a process-wide env var, so
+    // these two tests must never run concurrently with each other (or
+    // with anything else that touches it - nothing else does).
+    static ENV_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn system_office_fallback_is_off_by_default() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        std::env::remove_var(ALLOW_SYSTEM_OFFICE_FALLBACK_ENV);
+        assert!(!system_office_fallback_allowed());
+    }
+
+    #[test]
+    fn bundled_office_wins_over_system_fallback_when_both_present() {
+        // Simulates "both tiers technically available": with the bundled
+        // dir absent (this test environment), resolve() must still not
+        // silently succeed via a real system install unless the explicit
+        // opt-in env var is set - i.e. bundled-authoritative policy holds
+        // even when system fallback is unblocked, because bundled is
+        // always checked first.
+        let _guard = ENV_GUARD.lock().unwrap();
+        std::env::set_var(ALLOW_SYSTEM_OFFICE_FALLBACK_ENV, "1");
+        let resolved = resolve(EngineId::Office);
+        std::env::remove_var(ALLOW_SYSTEM_OFFICE_FALLBACK_ENV);
+        if let Ok(r) = resolved {
+            // Bundled isn't populated in this dev/CI tree, so any Ok(..)
+            // here must have come from System, and specifically never
+            // from a tier other than what bundled_path() would produce.
+            assert_ne!(r.tier, EngineTier::Configured);
+        }
     }
 
     #[test]

@@ -1,0 +1,16 @@
+{
+  "engine_id": "office",
+  "engine_name": "LibreOffice",
+  "version": "25.8.7",
+  "architecture": "x86_64",
+  "executable_relative_path": "LibreOffice/program/soffice.exe",
+  "source": "https://download.documentfoundation.org/libreoffice/stable/25.8.7/win/x86_64/LibreOffice_25.8.7_Win_x86-64.msi",
+  "sha256": "REPLACE_WITH_VERIFIED_SHA256_FROM_scripts/prepare-office-engine.ps1",
+  "bundled_at_build": "REPLACE_WITH_BUILD_TIMESTAMP",
+  "license_notice_path": "../../../THIRD_PARTY_NOTICES/LibreOffice",
+  "required_relative_dirs": [
+    "LibreOffice/program",
+    "LibreOffice/share",
+    "LibreOffice/presets"
+  ]
+}

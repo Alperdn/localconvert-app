@@ -24,6 +24,7 @@ pub enum EngineErrorKind {
     InputInvalid,
     OutputInvalid,
     ProcessFailed,
+    Timeout,
 }
 
 impl EngineErrorKind {
@@ -36,6 +37,7 @@ impl EngineErrorKind {
             EngineErrorKind::InputInvalid => "INPUT_INVALID",
             EngineErrorKind::OutputInvalid => "OUTPUT_INVALID",
             EngineErrorKind::ProcessFailed => "PROCESS_FAILED",
+            EngineErrorKind::Timeout => "TIMEOUT",
         }
     }
 }
@@ -83,6 +85,14 @@ impl EngineError {
 
     pub fn process_failed(engine: EngineId, user_message: impl Into<String>) -> Self {
         Self::new(EngineErrorKind::ProcessFailed, Some(engine), user_message)
+    }
+
+    pub fn timeout(engine: EngineId) -> Self {
+        Self::new(
+            EngineErrorKind::Timeout,
+            Some(engine),
+            format!("{} timed out and was stopped.", engine.display_name()),
+        )
     }
 
     pub fn input_invalid(message: impl Into<String>) -> Self {
@@ -172,6 +182,12 @@ mod tests {
         let rendered = err.to_string();
         assert!(!rendered.contains("alice"));
         assert!(!rendered.contains("secret"));
+    }
+
+    #[test]
+    fn office_timeout_has_expected_code() {
+        let err = EngineError::timeout(EngineId::Office);
+        assert_eq!(err.code(), "OFFICE_TIMEOUT");
     }
 
     #[test]

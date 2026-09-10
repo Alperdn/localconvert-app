@@ -1,5 +1,5 @@
 import { memo, useCallback, useMemo } from "react";
-import { motion, AnimatePresence, Reorder } from "framer-motion";
+import { motion, AnimatePresence, Reorder, useDragControls } from "framer-motion";
 import { Plus, Trash2, CheckSquare, Square, Upload, GripVertical, Layers } from "lucide-react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { invoke } from "@tauri-apps/api/core";
@@ -191,28 +191,7 @@ export const FileList = memo(function FileList() {
           >
             <AnimatePresence mode="popLayout">
               {filteredFiles.map((file, index) => (
-                <Reorder.Item
-                  key={file.id}
-                  value={file}
-                  initial={{ opacity: 0, scale: 0.95, y: 10 }}
-                  animate={{ opacity: 1, scale: 1, y: 0 }}
-                  exit={{ opacity: 0, scale: 0.95, height: 0, overflow: 'hidden' }}
-                  transition={{ delay: index * 0.02, type: 'spring', stiffness: 400, damping: 30 }}
-                  className="relative group outline-none"
-                  whileDrag={{ 
-                    scale: 1.02, 
-                    boxShadow: isDark ? "0 10px 30px rgba(0,0,0,0.5)" : "0 10px 30px rgba(0,0,0,0.1)",
-                    zIndex: 10 
-                  }}
-                >
-                  {/* Drag Handle Indicator */}
-                  <div className={`absolute left-0 top-1/2 -translate-y-1/2 -translate-x-3 opacity-0 group-hover:opacity-100 transition-all z-10 p-1 cursor-grab active:cursor-grabbing ${
-                    isDark ? "text-dark-500 hover:text-white" : "text-dark-300 hover:text-dark-900"
-                  }`}>
-                    <GripVertical className="w-5 h-5 drop-shadow-sm" />
-                  </div>
-                  <FileCard file={file} />
-                </Reorder.Item>
+                <SortableFileCard key={file.id} file={file} index={index} isDark={isDark} />
               ))}
             </AnimatePresence>
           </Reorder.Group>
@@ -238,5 +217,53 @@ export const FileList = memo(function FileList() {
         )}
       </AnimatePresence>
     </div>
+  );
+});
+
+// FileCard drag-handle fix (manual test finding "six dots misaligned,
+// overlapping card border"): the old handle was absolutely positioned
+// outside the card's own edge (`-translate-x-3` against a `w-5` icon,
+// i.e. only partially offset), so it visually collided with the card's
+// border/frame instead of sitting inside it. Rendering the handle as a
+// normal flex child *inside* FileCard's own padded row - a fixed-size hit
+// area, not raw dots pinned to the edge - keeps it vertically centered,
+// clear of the border, and stable across window widths since it's part of
+// layout flow rather than absolute positioning.
+//
+// This also required `useDragControls` per item + `dragListener={false}`
+// on Reorder.Item so only the handle (not the whole card) starts a drag -
+// previously ANY point on the card was a valid drag start, which is why
+// TEST D calls out "whole card not accidentally draggable from unrelated
+// areas". `useDragControls` is a hook, so it needs its own component
+// (one per list item) rather than being called inline in `.map()`.
+const SortableFileCard = memo(function SortableFileCard({
+  file,
+  index,
+  isDark,
+}: {
+  file: ConversionFile;
+  index: number;
+  isDark: boolean;
+}) {
+  const dragControls = useDragControls();
+
+  return (
+    <Reorder.Item
+      value={file}
+      dragListener={false}
+      dragControls={dragControls}
+      initial={{ opacity: 0, scale: 0.95, y: 10 }}
+      animate={{ opacity: 1, scale: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.95, height: 0, overflow: "hidden" }}
+      transition={{ delay: index * 0.02, type: "spring", stiffness: 400, damping: 30 }}
+      className="relative group outline-none"
+      whileDrag={{
+        scale: 1.02,
+        boxShadow: isDark ? "0 10px 30px rgba(0,0,0,0.5)" : "0 10px 30px rgba(0,0,0,0.1)",
+        zIndex: 10,
+      }}
+    >
+      <FileCard file={file} dragControls={dragControls} />
+    </Reorder.Item>
   );
 });

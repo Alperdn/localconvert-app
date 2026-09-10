@@ -54,6 +54,11 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
 
+      - name: Verify Office Engine is bundled (Windows only)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: npm run verify:office-engine
+
       - name: Build the app
         uses: tauri-apps/tauri-action@v0
         env:

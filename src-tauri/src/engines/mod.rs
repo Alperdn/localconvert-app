@@ -10,9 +10,12 @@
 //! function anywhere in this module, or called by a Tauri command, that
 //! turns a frontend-supplied string into an `EngineId`.
 
+#[cfg(test)]
+mod acceptance;
 pub mod engine_id;
 pub mod error;
 pub mod office;
+pub mod office_manifest;
 pub mod process;
 pub mod resolver;
 

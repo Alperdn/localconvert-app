@@ -122,6 +122,9 @@ pub fn run() {
             // V1 dependency architecture - backend-computed capability
             // model (see capabilities.rs)
             capabilities::get_capabilities,
+            // Step 4 - Office Engine self-check (structured status only,
+            // never raw filesystem paths - see engines::office_manifest).
+            engines::office_manifest::office_engine_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

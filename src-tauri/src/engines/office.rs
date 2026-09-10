@@ -78,7 +78,7 @@ pub fn convert(
     args.push(output_dir_abs.to_string_lossy().to_string());
     args.push(input_abs.to_string_lossy().to_string());
 
-    process::run(&resolved, &args, job_dir)?;
+    process::run_with_timeout(&resolved, &args, job_dir, super::office_manifest::CONVERT_TIMEOUT)?;
 
     let input_stem = input_path
         .file_stem()

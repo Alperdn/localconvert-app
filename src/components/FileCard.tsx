@@ -1,4 +1,4 @@
-import { motion } from "framer-motion";
+import { motion, type DragControls } from "framer-motion";
 import {
   Video,
   Music,
@@ -24,6 +24,7 @@ import {
   TrendingUp,
   Edit3,
   Scissors,
+  GripVertical,
 } from "lucide-react";
 import { memo, useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -105,6 +106,7 @@ const borderHoverColorMap: Record<string, string> = {
 
 interface FileCardProps {
   file: ConversionFile;
+  dragControls?: DragControls;
 }
 
 // Step 3 perf pass (section D/E): the store keeps a stable object reference
@@ -116,7 +118,7 @@ interface FileCardProps {
 // re-invoked just because its parent did (this was the direct mechanism
 // behind manual test finding "completed-file state making navigation
 // sluggish" with several files loaded).
-export const FileCard = memo(function FileCard({ file }: FileCardProps) {
+export const FileCard = memo(function FileCard({ file, dragControls }: FileCardProps) {
   // Step 3 perf pass (section D): FileCard is rendered once per queued
   // file. A plain `useStore()` subscribes to the whole store, so with N
   // files loaded, every unrelated state change (another file's progress
@@ -312,6 +314,20 @@ export const FileCard = memo(function FileCard({ file }: FileCardProps) {
       )}
 
       <div className="p-4 flex items-center gap-4">
+        {/* Drag Handle - fixed-size hit area inside the card's own padded
+            row (not absolutely positioned against the edge), so it can't
+            overlap the border and stays vertically centered/aligned at any
+            window width. `touch-none` stops the browser's own touch
+            scroll gesture from fighting the drag gesture on the handle. */}
+        <div
+          className={`w-6 h-10 -ml-1 rounded-lg flex items-center justify-center shrink-0 touch-none select-none ${
+            dragControls ? "cursor-grab active:cursor-grabbing" : ""
+          } ${isDark ? "text-dark-500 hover:text-white hover:bg-dark-700/50" : "text-dark-300 hover:text-dark-900 hover:bg-dark-100/50"}`}
+          onPointerDown={(e) => dragControls?.start(e)}
+        >
+          <GripVertical className="w-4 h-4" />
+        </div>
+
         {/* Checkbox */}
         <motion.button
           className={`w-5 h-5 rounded-[6px] border-[1.5px] flex items-center justify-center transition-all shrink-0 ${

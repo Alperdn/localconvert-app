@@ -1,4 +1,4 @@
-import { motion } from "framer-motion";
+import { memo } from "react";
 import { Settings, ShieldCheck, Wrench, Zap, Minus, Square, X } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useStore } from "../store/useStore";
@@ -8,10 +8,29 @@ interface HeaderProps {
   onSettingsClick: () => void;
   onPrivacyClick: () => void;
   onToolsClick: () => void;
-  onHelpClick?: () => void;
 }
 
-export function Header({ onSettingsClick, onPrivacyClick, onToolsClick, onHelpClick }: HeaderProps) {
+// Shared class for the small icon buttons - CSS-only hover/active feedback
+// (transform + colors), no Framer Motion gesture recognizer per button. That
+// recognizer was doing hit-testing on every pointer move across the header,
+// which is what made rapid cursor movement across these buttons feel
+// delayed (manual test finding "top-right small buttons still feel
+// laggy"). `transition-transform`/`transition-colors` instead of
+// `transition-all` keeps the browser from re-evaluating properties (like
+// the inherited backdrop-filter) that never actually change on hover.
+const iconButtonClass = (isDark: boolean) =>
+  `p-2 rounded-lg transition-transform transition-colors duration-150 will-change-transform hover:-translate-y-px hover:scale-105 active:scale-95 ${
+    isDark ? "hover:bg-dark-700/50 text-dark-400 hover:text-white" : "hover:bg-dark-100/50 text-dark-500 hover:text-brand"
+  }`;
+
+// Step 3 perf pass (section D): Header is always mounted above everything
+// else. `memo` alone doesn't help if the parent hands it fresh callback
+// props every render, so this only pays off paired with the `useCallback`
+// wrapping in App.tsx - together they stop Header (and the backdrop-blur
+// layer it paints) from re-rendering on every file/progress-tick update
+// that App.tsx's `files` subscription produces during conversion (manual
+// test finding "no major degradation" during file activity, TEST B).
+export const Header = memo(function Header({ onSettingsClick, onPrivacyClick, onToolsClick }: HeaderProps) {
   const appWindow = getCurrentWindow();
   // Step 3 perf pass (section D): the header is always mounted and rendered
   // above everything else, so subscribing to the whole store here meant
@@ -24,11 +43,11 @@ export function Header({ onSettingsClick, onPrivacyClick, onToolsClick, onHelpCl
   const handleClose = () => appWindow.close();
 
   return (
-    <header className={`relative z-50 h-12 flex items-center justify-between select-none transition-all duration-300 rounded-xl glass-panel ${
+    <header className={`relative z-50 h-12 flex items-center justify-between select-none transition-shadow duration-300 rounded-xl glass-panel ${
       isDark ? "shadow-lg shadow-black/20" : "shadow-md shadow-dark-900/5"
     }`}>
       {/* Draggable region - Logo area */}
-      <div 
+      <div
         className="flex items-center gap-3 px-4 h-full flex-1 rounded-l-xl"
         data-tauri-drag-region
       >
@@ -44,54 +63,28 @@ export function Header({ onSettingsClick, onPrivacyClick, onToolsClick, onHelpCl
       <div className="flex items-center h-full px-2">
         {/* Action buttons */}
         <div className="flex items-center gap-1 px-3">
-          <motion.button
-            className={`p-2 rounded-lg transition-all duration-200 ${
-              isDark ? "hover:bg-dark-700/50 text-dark-400 hover:text-white" : "hover:bg-dark-100/50 text-dark-500 hover:text-brand"
-            }`}
-            whileHover={{ scale: 1.05, y: -1 }}
-            whileTap={{ scale: 0.95 }}
+          <button
+            className={iconButtonClass(isDark)}
             onClick={onToolsClick}
             title={t("header.conversionTools")}
           >
             <Wrench className="w-4 h-4" />
-          </motion.button>
-          <motion.button
-            className={`p-2 rounded-lg transition-all duration-200 ${
-              isDark ? "hover:bg-dark-700/50 text-dark-400 hover:text-white" : "hover:bg-dark-100/50 text-dark-500 hover:text-brand"
-            }`}
-            whileHover={{ scale: 1.05, y: -1 }}
-            whileTap={{ scale: 0.95 }}
+          </button>
+          <button
+            className={iconButtonClass(isDark)}
             onClick={onPrivacyClick}
             title={t("header.privacyAndStatus")}
           >
             <ShieldCheck className="w-4 h-4" />
-          </motion.button>
-          <motion.button
-            className={`p-2 rounded-lg transition-all duration-200 ${
-              isDark ? "hover:bg-dark-700/50 text-dark-400 hover:text-white" : "hover:bg-dark-100/50 text-dark-500 hover:text-brand"
-            }`}
-            whileHover={{ scale: 1.05, y: -1 }}
-            whileTap={{ scale: 0.95 }}
+          </button>
+          <button
+            className={iconButtonClass(isDark)}
             onClick={onSettingsClick}
             title={t("header.settings")}
           >
             <Settings className="w-4 h-4" />
-          </motion.button>
-        </div>
-
-        {/* Separator */}
-        <div className={`w-px h-5 mx-1 ${isDark ? "bg-dark-700/50" : "bg-dark-200/50"}`} />
-
-        {/* Help button */}
-        <motion.div whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}>
-          <button
-            className="px-4 py-1.5 mx-2 text-xs font-medium text-warning-500 hover:text-warning-400 bg-warning-500/10 hover:bg-warning-500/20 rounded-lg transition-colors flex items-center gap-1"
-            onClick={onHelpClick}
-            title={t("header.help")}
-          >
-            {t("header.help")}
           </button>
-        </motion.div>
+        </div>
 
         {/* Separator */}
         <div className={`w-px h-5 mx-1 ${isDark ? "bg-dark-700/50" : "bg-dark-200/50"}`} />
@@ -129,4 +122,4 @@ export function Header({ onSettingsClick, onPrivacyClick, onToolsClick, onHelpCl
       </div>
     </header>
   );
-}
+});

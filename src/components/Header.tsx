@@ -1,8 +1,13 @@
 import { memo } from "react";
-import { Settings, ShieldCheck, Wrench, Zap, Minus, Square, X } from "lucide-react";
+import { Settings, ShieldCheck, Wrench, Minus, Square, X } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useStore } from "../store/useStore";
 import { t } from "../locales";
+// A 128x128 pre-downscaled copy of the master src/assets/meb-donustur-logo.png
+// (the full 1254x1254 source, kept as-is for icon regeneration) - the header
+// only ever renders this at 32px, so shipping the full-resolution master here
+// would bloat the app bundle by ~735KB for zero visible benefit.
+import logoMark from "../assets/meb-donustur-logo-header.png";
 
 interface HeaderProps {
   onSettingsClick: () => void;
@@ -51,11 +56,18 @@ export const Header = memo(function Header({ onSettingsClick, onPrivacyClick, on
         className="flex items-center gap-3 px-4 h-full flex-1 rounded-l-xl"
         data-tauri-drag-region
       >
-        <div className="w-7 h-7 rounded-lg bg-accent-gradient flex items-center justify-center pointer-events-none shadow-glow">
-          <Zap className="w-4 h-4 text-white" />
+        {/* Rebrand pass: the approved shield emblem already IS a complete,
+            self-colored mark (red shield, own drop shadow baked into the
+            art) - unlike the old Zap glyph, it must not sit inside a
+            further colored/gradient box (that reads as a background behind
+            the logo, not part of it) or get stretched off its own aspect
+            ratio. `object-contain` + a fixed square box is what keeps it
+            crisp and centered without either. */}
+        <div className="w-8 h-8 flex items-center justify-center pointer-events-none shrink-0">
+          <img src={logoMark} alt="" className="w-full h-full object-contain" draggable={false} />
         </div>
         <span className={`text-sm font-semibold tracking-wide pointer-events-none ${isDark ? "text-white" : "text-dark-900"}`}>
-          Local<span className="text-brand">Convert</span>
+          MEB-<span className="text-brand">Dönüştür</span>
         </span>
       </div>
 

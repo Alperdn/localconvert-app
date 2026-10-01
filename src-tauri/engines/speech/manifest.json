@@ -1,0 +1,128 @@
+{
+    "schema_version":  2,
+    "engine_id":  "speech",
+    "engine_name":  "whisper.cpp",
+    "engine_version":  "v1.9.2",
+    "architecture":  "x86_64",
+    "source":  "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.2/whisper-bin-x64.zip",
+    "source_archive_sha256":  "49dcc16de826f20bd53d44f947a1ae49dfa81f86cad67a64d80820cb192d674a",
+    "source_commit":  "306c88f4d1286aec1bf96e544632897886af5501",
+    "license":  "MIT",
+    "executable_relative_path":  "bin/whisper-cli.exe",
+    "bin_files":  [
+                      {
+                          "path":  "bin/ggml.dll",
+                          "sha256":  "894c6237ee7849843213906a2b6a0b371aaa6234048d465f206d910ae846fafb",
+                          "size":  67584
+                      },
+                      {
+                          "path":  "bin/ggml-base.dll",
+                          "sha256":  "1482359d921b4c1b183d49db1d770f9b5e90d86a618b8b648d4845c2471ad6b0",
+                          "size":  666624
+                      },
+                      {
+                          "path":  "bin/ggml-cpu-alderlake.dll",
+                          "sha256":  "d1c5411561361f7ce71ff8455ecf01f666f581b0608fa91a1dfe7d3fd6a25bd1",
+                          "size":  809984
+                      },
+                      {
+                          "path":  "bin/ggml-cpu-cannonlake.dll",
+                          "sha256":  "2ef36f05fa252ff4fdcb8d42ebce1ceba4f3d3de12b93bed15bdee6237dccd63",
+                          "size":  853504
+                      },
+                      {
+                          "path":  "bin/ggml-cpu-cascadelake.dll",
+                          "sha256":  "505899aaf3f99c5d714361640f561458ea97f8a09eb0614568a66bead2115cb0",
+                          "size":  850944
+                      },
+                      {
+                          "path":  "bin/ggml-cpu-haswell.dll",
+                          "sha256":  "f8cf2f35a06498d783d77fde42004dd54d2f8236b0d42ac323b94bba65a603c4",
+                          "size":  811008
+                      },
+                      {
+                          "path":  "bin/ggml-cpu-icelake.dll",
+                          "sha256":  "78ad143ee2e674d037b4840ef33b5748a0659762a26e0ae2b621c4f9451cbde8",
+                          "size":  850944
+                      },
+                      {
+                          "path":  "bin/ggml-cpu-sandybridge.dll",
+                          "sha256":  "ee47db7dc40fb30eca73e62a05306059c2c3c42aecddf2e8d6ad7e530069b815",
+                          "size":  803328
+                      },
+                      {
+                          "path":  "bin/ggml-cpu-skylakex.dll",
+                          "sha256":  "164e2793897944a43ee071ce6c0b09018088bdf4dd8b14ac0755c58849cf8c50",
+                          "size":  852992
+                      },
+                      {
+                          "path":  "bin/ggml-cpu-sse42.dll",
+                          "sha256":  "7318a9a3b95a85b2453c437b274412bbbae89e5ecdf5babb19b99edc06ded063",
+                          "size":  790016
+                      },
+                      {
+                          "path":  "bin/ggml-cpu-x64.dll",
+                          "sha256":  "af0f1c2f28ff9e3f472481dd969907bda85fa39d4fde17617d4bb0b389301b60",
+                          "size":  794112
+                      },
+                      {
+                          "path":  "bin/whisper.dll",
+                          "sha256":  "792fc523c7ad16e6b9c348e30ad5e5f591165cbcf6a80ca8d0db02a38ce3eea2",
+                          "size":  1368064
+                      },
+                      {
+                          "path":  "bin/whisper-cli.exe",
+                          "sha256":  "95e3c0b0e778ad9499eb0125f97c1dcf437dd9eb4ea77050b043574f93c2631d",
+                          "size":  479232
+                      }
+                  ],
+    "runtime":  {
+                    "name":  "Microsoft Visual C++ 2015-2022 Runtime (VC143)",
+                    "version":  "14.44.35211.0",
+                    "source":  "Visual Studio 2022 Community 17.14 - VC\\Redist\\MSVC\\14.44.35112\\x64 (Distributable Code list: https://aka.ms/vs/17/redist.txt)",
+                    "license_notice_path":  "THIRD_PARTY_NOTICES/Microsoft-VC-Runtime",
+                    "deployment":  "app-local (unmodified, beside the engine executable)"
+                },
+    "runtime_files":  [
+                          {
+                              "path":  "bin/msvcp140.dll",
+                              "sha256":  "0f885b509a685d2bbfa652fed26b5fb31d88fbdab0a978c641d1c7b8aa460aa9",
+                              "size":  557728,
+                              "version":  "14.44.35211.0"
+                          },
+                          {
+                              "path":  "bin/vcruntime140.dll",
+                              "sha256":  "d5e4d9a3e835fa679450145d6a7d94e36573a509317111904d9b3712c30d9066",
+                              "size":  124544,
+                              "version":  "14.44.35211.0"
+                          },
+                          {
+                              "path":  "bin/vcruntime140_1.dll",
+                              "sha256":  "1f2d41c4aa5db0bc33ebf7b66d72943a817d7ce6cbe880502a9403823633093f",
+                              "size":  49792,
+                              "version":  "14.44.35211.0"
+                          },
+                          {
+                              "path":  "bin/vcomp140.dll",
+                              "sha256":  "55aba23cdcd6484fbb06f4155b8ca75adfce7a881f10afd0c49457165e677164",
+                              "size":  193152,
+                              "version":  "14.44.35211.0"
+                          }
+                      ],
+    "model":  {
+                  "id":  "ggml-small-q5_1",
+                  "file_relative_path":  "models/ggml-small-q5_1.bin",
+                  "sha256":  "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+                  "size_bytes":  190085487,
+                  "source":  "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-small-q5_1.bin",
+                  "source_revision":  "5359861c739e955e79d9a303bcbc70fb988958b1",
+                  "multilingual":  true,
+                  "languages":  [
+                                    "tr",
+                                    "auto"
+                                ],
+                  "license":  "MIT"
+              },
+    "license_notice_path":  "THIRD_PARTY_NOTICES/whisper.cpp",
+    "bundled_at_build":  "2026-09-21T14:10:23.1886990Z"
+}

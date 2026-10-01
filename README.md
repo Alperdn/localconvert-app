@@ -1,20 +1,20 @@
-# LocalConvert - Privacy-First Local File Converter
+# MEB-Dönüştür - Privacy-First Local File Converter
 
 A powerful, privacy-focused file converter that runs entirely on your device. Convert videos, audio, images, documents, and more without uploading anything to the cloud. Your files never leave your computer.
 
-![LocalConvert](https://img.shields.io/badge/version-1.0.0-blue.svg)
+![MEB-Dönüştür](https://img.shields.io/badge/version-1.0.0-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 <p align="center">
-  <img src="docs/screenshots/main-interface.png" alt="LocalConvert Main Interface" width="800">
+  <img src="docs/screenshots/main-interface.png" alt="MEB-Dönüştür Main Interface" width="800">
 </p>
 
 ---
 
-## Why LocalConvert?
+## Why MEB-Dönüştür?
 
-Unlike cloud-based converters (CloudConvert, Zamzar, Online-Convert), LocalConvert:
+Unlike cloud-based converters (CloudConvert, Zamzar, Online-Convert), MEB-Dönüştür:
 
 - **Never uploads your files** - All processing happens locally
 - **Works completely offline** - No internet required after setup

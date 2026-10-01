@@ -1,0 +1,17 @@
+﻿FFmpeg 9.0.2 - LGPL source offer (MEB-Donusturucu, Ses Dikte audio preprocessing)
+
+The bundled ffmpeg.exe / ffprobe.exe are built from the unmodified official
+FFmpeg 9.0.2 source release with an LGPL-2.1-or-later configuration (no
+--enable-gpl, --enable-nonfree or --enable-version3, no external libraries):
+
+  Source:        https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz
+  Signature:     https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz.asc
+                 (FFmpeg release signing key FCF9 86EA 15E6 E293 A564 4F10 B432 2F04 D676 58D8)
+  SHA-256:       8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e
+  Configuration: see ffmpeg-buildconf.txt / build-record.txt in this folder
+  Build script:  scripts/ffmpeg/build-ffmpeg.sh (in this project's repository)
+
+The corresponding source, the exact configure line and the build script are
+available on request from the distributor of this application. The libraries
+are statically linked; to rebuild a modified version, run
+scripts/build-ffmpeg-engine.ps1 against a modified source tree.

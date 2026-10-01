@@ -1,0 +1,8 @@
+compiler=gcc.exe (Rev4, Built by MSYS2 project) 16.2.0
+nasm=NASM version 3.02 compiled on Jul  4 2026
+make=GNU Make 4.4.1
+msys2_runtime=msys2-runtime 3.6.9-2
+build_date=2026-09-21T12:31:47Z
+configure_flags=--arch=x86_64 --target-os=mingw32 --prefix=/c/ffmpeg-engine-build/out --disable-everything --disable-autodetect --disable-network --disable-doc --disable-debug --disable-ffplay --enable-ffmpeg --enable-ffprobe --disable-avdevice --enable-static --disable-shared --extra-ldflags=-static --enable-protocol=file --enable-demuxer=wav,mp3,aac,mov,flac,ogg --enable-parser=aac,aac_latm,mpegaudio,flac,vorbis,opus --enable-decoder=pcm_s16le,pcm_s16be,pcm_s24le,pcm_s32le,pcm_u8,pcm_f32le,pcm_f64le,mp3float,mp3,aac,aac_latm,alac,flac,vorbis,opus --enable-muxer=wav --enable-encoder=pcm_s16le --enable-filter=aresample,aformat,anull,anullsink,abuffer,abuffersink --enable-bsf=null
+ffmpeg_sha256=e10c5f20ef3f8ddab6b4bb6b125936bce086bdf01f26b19c6b33e16dcb942510
+ffprobe_sha256=8370e2bb33a6a5dbba919525f223dfe66cecfb894aa46647b531604313a19f6f

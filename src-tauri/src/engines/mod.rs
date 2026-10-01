@@ -13,10 +13,21 @@
 #[cfg(test)]
 mod acceptance;
 pub mod engine_id;
+pub mod ascii_link;
+pub mod audio_prep;
+pub mod audio_wav;
+pub mod bundle;
 pub mod error;
+pub mod ffmpeg_manifest;
 pub mod office;
 pub mod office_manifest;
 pub mod process;
 pub mod resolver;
+pub mod speech;
+pub mod speech_error;
+pub mod speech_manifest;
 
 pub use engine_id::EngineId;
+
+#[cfg(test)]
+mod speech_dir_tests;

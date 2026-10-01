@@ -1,0 +1,24 @@
+﻿Microsoft Visual C++ 2015-2022 Runtime (VC143) - app-local deployment
+
+The Ses Dikte speech engine (whisper.cpp, MIT) is built with Microsoft Visual C++ and needs the
+following runtime DLLs, deployed unmodified beside it in engines/speech/bin/ so that end users do
+not have to install the Visual C++ Redistributable:
+
+  bin/msvcp140.dll  v14.44.35211.0  557728 bytes  SHA-256 0f885b509a685d2bbfa652fed26b5fb31d88fbdab0a978c641d1c7b8aa460aa9
+  bin/vcruntime140.dll  v14.44.35211.0  124544 bytes  SHA-256 d5e4d9a3e835fa679450145d6a7d94e36573a509317111904d9b3712c30d9066
+  bin/vcruntime140_1.dll  v14.44.35211.0  49792 bytes  SHA-256 1f2d41c4aa5db0bc33ebf7b66d72943a817d7ce6cbe880502a9403823633093f
+  bin/vcomp140.dll  v14.44.35211.0  193152 bytes  SHA-256 55aba23cdcd6484fbb06f4155b8ca75adfce7a881f10afd0c49457165e677164
+
+Source:   Visual Studio 2022 Community 17.14 - VC\Redist\MSVC\14.44.35112\x64 (Distributable Code list: https://aka.ms/vs/17/redist.txt)
+Redist folder version: 14.44.35112   File version: 14.44.35211.0
+Signed:   Microsoft Corporation (Authenticode valid, verified at staging time)
+
+License basis: Microsoft's 'Distributable Code for Visual Studio 2022' list (https://aka.ms/vs/17/redist.txt):
+  'Subject to the License Terms for the software, you may copy and distribute with your program any of
+   the files within the following folder and its subfolders except as noted below. You may not modify
+   these files.  [VisualStudioFolder]\VC\redist'
+The files are distributed UNMODIFIED. Any redistribution is subject to the Microsoft Software License
+Terms of the Visual Studio edition used to obtain them; see also the notices in the Visual Studio
+installation (Licenses\1033\ThirdPartyNotices.txt).
+
+These files are NOT covered by this project's MIT license.

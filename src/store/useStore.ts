@@ -68,6 +68,18 @@ export interface ConversionFile extends FileInfo {
   previewLoading: boolean;
 }
 
+// Step 4 UI-acceptance fix pass (Bug 1/B): the single authoritative
+// outcome of one convertFiles() run, so a caller (ConversionPanel,
+// keyboard shortcut) can decide which toast to show from actual per-file
+// results instead of "the invoke() promise resolved without throwing" -
+// convertSingleFile always catches its own errors and calls setFileStatus,
+// so convertFiles() itself never rejects just because a conversion failed.
+export interface ConversionBatchResult {
+  succeeded: string[];
+  failed: string[];
+  cancelled: string[];
+}
+
 export interface ConversionProgressEvent {
   job_id: string;
   progress: number;
@@ -417,11 +429,18 @@ interface Store {
     etaSecs?: number | null,
     speed?: number | null
   ) => void;
+  retryFile: (id: string) => void;
   reorderFiles: (files: ConversionFile[]) => void;
 
   // Category
   activeCategory: Category;
   setActiveCategory: (category: Category) => void;
+
+  // Top-level view. "dictation" (Ses Dikte, speech-to-text) is a separate
+  // feature from the audio *conversion* category and never shares its
+  // file list / conversion state.
+  activeView: "convert" | "dictation";
+  setActiveView: (view: "convert" | "dictation") => void;
 
   // Tools
   tools: ToolStatus[];
@@ -444,7 +463,7 @@ interface Store {
   isConverting: boolean;
   activeConversions: Set<string>;
   currentJobId: string | null;
-  convertFiles: (options?: ConversionOptions) => Promise<void>;
+  convertFiles: (options?: ConversionOptions) => Promise<ConversionBatchResult>;
   cancelConversion: (jobId?: string) => Promise<void>;
 
   // Settings
@@ -498,6 +517,39 @@ export function getFilesToConvert(state: {
       : state.files.filter((f) => f.status === "pending");
 
   return pool.filter(inCategory);
+}
+
+// ── Single source of truth for "which of the current conversion candidates
+// are ACTIVE enough to justify a capability warning" (Step 4 UI-hardening
+// pass, Bug 1) ─────────────────────────────────────────────────────────────
+// getFilesToConvert's own "no explicit selection" fallback deliberately
+// keeps EVERY pending file in scope (see its doc comment and the "a brand
+// new file, never explicitly selected, must now be part of the next batch"
+// test) - that's the correct, already-tested set of files Convert will
+// actually attempt. But using it directly to decide whether to show the
+// amber "engine missing" banner meant a file the user had only just added -
+// never selected, never given an output format, never touched at all - was
+// treated as if the user had already decided to convert it: dropping a
+// video while working on something else in the "All" view immediately
+// raised an FFmpeg warning for a file nobody had acted on yet, and the
+// warning stayed pinned on that video even after switching attention to an
+// unrelated PNG, because the PNG had no reason to change the picture.
+//
+// An explicit selection is always enough on its own - the user checked that
+// file's box on purpose, so `getFilesToConvert`'s selection-scoped pool is
+// used unchanged. With no explicit selection, a file only counts once it
+// has a resolved output format (per-file `outputFormat`, or the shared
+// `globalOutputFormat`) - some sign the user actually engaged with it,
+// rather than merely having added it to the list.
+export function getActiveConversionCandidates(state: {
+  files: ConversionFile[];
+  selectedFiles: string[];
+  activeCategory: Category;
+  globalOutputFormat: string | null;
+}): ConversionFile[] {
+  const candidates = getFilesToConvert(state);
+  if (state.selectedFiles.length > 0) return candidates;
+  return candidates.filter((f) => resolveOutputFormat(f, state.globalOutputFormat));
 }
 
 // ── Single source of truth for "what target format is this file actually
@@ -674,7 +726,15 @@ export const useStore = create<Store>((set, get) => ({
               ...f,
               status,
               progress,
-              error: error ?? f.error,
+              // Step 4 UI-acceptance fix pass (Bug 1/D): a terminal result
+              // must resolve exactly once and never carry a previous
+              // attempt's leftovers. Only an "error" transition is allowed
+              // to (re)populate `error` - every other status (converting,
+              // completed, pending) always clears it, so a retry that
+              // succeeds can never leave stale error text sitting next to
+              // a "completed" card (FileCard renders `file.error`
+              // independently of `file.status`).
+              error: status === "error" ? (error ?? f.error) : null,
               outputPath: outputPath ?? f.outputPath,
               etaSecs: etaSecs ?? f.etaSecs,
               speed: speed ?? f.speed,
@@ -695,15 +755,53 @@ export const useStore = create<Store>((set, get) => ({
     }));
   },
 
+  // Step 4 UI-acceptance fix pass (Bug 2): explicit, single retry path for
+  // an errored file. `getFilesToConvert` intentionally only ever considers
+  // `status === "pending"` files (see its own doc comment) - an "error"
+  // file is a genuine terminal state, not a candidate, and stays that way
+  // forever unless something explicitly moves it back to "pending". Before
+  // this action existed, nothing did: deselecting/reselecting an errored
+  // file only touched `selectedFiles`, never `status`, so the file could
+  // never re-enter `getFilesToConvert` and the ConversionPanel was stuck
+  // showing "Dosya bekleniyor" with no way out except the global "Temizle".
+  // retryFile is the single, deliberate transition error -> pending: it
+  // clears the stale terminal result (error text, output path, progress,
+  // speed/eta) and re-selects the file so it's picked up by the very next
+  // batch regardless of what else is currently selected (avoids the
+  // "selection-only mode" trap - see getFilesToConvert/section K).
+  retryFile: (id) => {
+    set((state) => ({
+      files: state.files.map((f) =>
+        f.id === id
+          ? {
+              ...f,
+              status: "pending",
+              progress: 0,
+              error: null,
+              outputPath: null,
+              etaSecs: null,
+              speed: null,
+            }
+          : f
+      ),
+      selectedFiles: state.selectedFiles.includes(id)
+        ? state.selectedFiles
+        : [...state.selectedFiles, id],
+    }));
+  },
+
   reorderFiles: (newFiles) => {
     set({ files: newFiles });
   },
 
   // Category
+  activeView: "convert",
+  setActiveView: (view) => set({ activeView: view }),
   activeCategory: "all",
   setActiveCategory: (category) =>
     set((state) => ({
       activeCategory: category,
+      activeView: "convert",
       // Step 3 manual-test fix (finding #5/C): a target format chosen for
       // the previous category is almost never valid for the new one (e.g.
       // "mp4" selected while on Video, then switching to Image) - clear it
@@ -793,7 +891,9 @@ export const useStore = create<Store>((set, get) => ({
       return !capId || isCapabilityUsable(getCapability(capId));
     });
 
-    if (filesToConvert.length === 0) return;
+    const batchResult: ConversionBatchResult = { succeeded: [], failed: [], cancelled: [] };
+
+    if (filesToConvert.length === 0) return batchResult;
 
     // Add files to active conversions
     const newActiveConversions = new Set(get().activeConversions);
@@ -863,13 +963,21 @@ export const useStore = create<Store>((set, get) => ({
         // Check if this conversion was cancelled
         if (result.error === "Conversion cancelled") {
           setFileStatus(file.id, "pending", 0, undefined, undefined, null, null);
+          batchResult.cancelled.push(file.id);
           return;
         }
 
+        // Step 4 UI-acceptance fix pass (Bug 1/B): the backend's `success`
+        // boolean plus its authoritative `output_path` is the ONLY thing
+        // that decides completed vs. error here - never inferred from the
+        // invoke() promise merely resolving (that's true even when the
+        // process launched fine but the engine itself reported failure).
         if (result.success) {
           setFileStatus(file.id, "completed", 100, undefined, result.output_path ?? undefined, null, null);
+          batchResult.succeeded.push(file.id);
         } else {
           setFileStatus(file.id, "error", 0, result.error ?? "PROCESS_FAILED", undefined, null, null);
+          batchResult.failed.push(file.id);
         }
       } catch (error) {
         const errorStr = String(error);
@@ -877,12 +985,14 @@ export const useStore = create<Store>((set, get) => ({
         const updatedActive = new Set(get().activeConversions);
         updatedActive.delete(file.id);
         set({ activeConversions: updatedActive });
-        
+
         // Don't show error for cancelled conversions
         if (errorStr.includes("cancelled")) {
           setFileStatus(file.id, "pending", 0, undefined, undefined, null, null);
+          batchResult.cancelled.push(file.id);
         } else {
           setFileStatus(file.id, "error", 0, errorStr, undefined, null, null);
+          batchResult.failed.push(file.id);
         }
       }
     };
@@ -931,6 +1041,8 @@ export const useStore = create<Store>((set, get) => ({
     if (remainingActive.size === 0) {
       set({ isConverting: false, currentJobId: null });
     }
+
+    return batchResult;
   },
 
   cancelConversion: async (jobId?: string) => {

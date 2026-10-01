@@ -1187,23 +1187,27 @@ pub async fn register_context_menu() -> Result<String, String> {
         // Create registry entries for context menu using reg.exe
         // Using HKEY_CURRENT_USER doesn't require admin privileges
         
-        // 1. Create the shell key for LocalConvert
+        // 1. Create the shell key for MEB-Dönüştür. The key segment itself
+        // stays ASCII ("MEBDonustur") - it's an internal registry
+        // identifier never shown to the user - while "/ve" (the key's
+        // default value) is the actual visible right-click menu label, and
+        // must match the rebrand.
         let result1 = Command::new("reg")
             .args([
                 "add",
-                r"HKEY_CURRENT_USER\Software\Classes\*\shell\LocalConvert",
+                r"HKEY_CURRENT_USER\Software\Classes\*\shell\MEBDonustur",
                 "/ve",
                 "/d",
-                "Convert with LocalConvert",
+                "MEB-Dönüştür ile Dönüştür",
                 "/f"
             ])
             .output();
-        
+
         // 2. Add icon
         let result2 = Command::new("reg")
             .args([
                 "add",
-                r"HKEY_CURRENT_USER\Software\Classes\*\shell\LocalConvert",
+                r"HKEY_CURRENT_USER\Software\Classes\*\shell\MEBDonustur",
                 "/v",
                 "Icon",
                 "/d",
@@ -1211,13 +1215,13 @@ pub async fn register_context_menu() -> Result<String, String> {
                 "/f"
             ])
             .output();
-        
+
         // 3. Create the command
         let command_value = format!("\"{}\" \"%1\"", exe_str);
         let result3 = Command::new("reg")
             .args([
                 "add",
-                r"HKEY_CURRENT_USER\Software\Classes\*\shell\LocalConvert\command",
+                r"HKEY_CURRENT_USER\Software\Classes\*\shell\MEBDonustur\command",
                 "/ve",
                 "/d",
                 &command_value,
@@ -1243,6 +1247,18 @@ pub async fn register_context_menu() -> Result<String, String> {
 pub async fn unregister_context_menu() -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
+        Command::new("reg")
+            .args([
+                "delete",
+                r"HKEY_CURRENT_USER\Software\Classes\*\shell\MEBDonustur",
+                "/f"
+            ])
+            .output()
+            .ok();
+        // Best-effort cleanup of a pre-rebrand registration too, so a user
+        // who registered the context menu under the old LocalConvert name
+        // and later clicks "Kaldır" isn't left with a stale duplicate
+        // entry pointing at the same (or an uninstalled) executable.
         Command::new("reg")
             .args([
                 "delete",

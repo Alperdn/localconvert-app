@@ -21,7 +21,7 @@ import {
 import { open } from "@tauri-apps/plugin-dialog";
 import toast from "react-hot-toast";
 import { useShallow } from "zustand/react/shallow";
-import { useStore, ConversionPreset, GpuInfo, getFilesToConvert, commonOutputFormat } from "../store/useStore";
+import { useStore, ConversionPreset, GpuInfo, getFilesToConvert, getActiveConversionCandidates, commonOutputFormat } from "../store/useStore";
 import { t, translateCapabilityState, describeUnavailableCapability } from "../locales";
 import { getOutputFormats } from "../types/formats";
 import { PresetsSelector } from "./PresetsSelector";
@@ -157,12 +157,25 @@ export const ConversionPanel = memo(function ConversionPanel() {
     }
   }
 
+  // Step 4 UI-hardening pass (Bug 1): the warning banner (and the Convert
+  // button's enabled state) must reflect only the ACTIVE candidates - see
+  // getActiveConversionCandidates' doc comment - not every pending file
+  // `filesToConvert` would implicitly batch. `filesToConvert` itself stays
+  // unscoped by this so the stats/button label/estimated size still reflect
+  // the real implicit batch Convert will attempt.
+  const activeCandidates = getActiveConversionCandidates({
+    files,
+    selectedFiles,
+    activeCategory,
+    globalOutputFormat,
+  });
+
   // Feature Availability Behavior (Step 3, section D/E/F): a file whose
   // conversion depends on a not-yet-bundled engine (Office, FFmpeg, ...)
   // must be gated BEFORE the backend ever spawns a process, not discovered
   // via a failed conversion. `blockedCapability` is the first
-  // non-AVAILABLE capability found among the queued files, if any.
-  const blockedCapability = getBlockedCapability(filesToConvert, getCapability);
+  // non-AVAILABLE capability found among the active candidates, if any.
+  const blockedCapability = getBlockedCapability(activeCandidates, getCapability);
 
   const canConvert =
     filesToConvert.length > 0 &&
@@ -198,7 +211,7 @@ export const ConversionPanel = memo(function ConversionPanel() {
     }
 
     try {
-      await convertFiles({
+      const result = await convertFiles({
         quality,
         preserveMetadata,
         presetResolution: settings.presetResolution,
@@ -219,7 +232,26 @@ export const ConversionPanel = memo(function ConversionPanel() {
         subtitleAction: settings.subtitleAction.startsWith("Burn-in-") ? "Burn Into Video" : settings.subtitleAction,
         subtitleStreamIndex: settings.subtitleAction.startsWith("Burn-in-") ? parseInt(settings.subtitleAction.split("-").pop() || "0") : null,
       });
-      toast.success(t("workflow.conversionCompleted"));
+
+      // Step 4 UI-acceptance fix pass (Bug 1/B): a conversion attempt must
+      // resolve to exactly ONE terminal UI state - convertFiles() never
+      // rejects just because an individual file failed (convertSingleFile
+      // catches its own errors and records the outcome in file.status), so
+      // the toast decision must come from the batch's actual per-file
+      // results, not from "the promise resolved without throwing". Never
+      // show both a success and an error toast for the same attempt, and
+      // never show success when at least one file failed.
+      if (result.failed.length > 0) {
+        toast.error(
+          result.succeeded.length > 0
+            ? t("workflow.someConversionsFailed")
+            : t("notifications.processFailed")
+        );
+      } else if (result.succeeded.length > 0) {
+        toast.success(t("workflow.conversionCompleted"));
+      }
+      // result.succeeded.length === 0 && result.failed.length === 0 means
+      // every queued file was cancelled mid-flight - no toast either way.
     } catch (error) {
       toast.error(t("workflow.someConversionsFailed"));
     }
@@ -876,7 +908,7 @@ export const ConversionPanel = memo(function ConversionPanel() {
               />
             )}
             <Play className={`w-5 h-5 ${canConvert ? "fill-white" : ""}`} />
-            {t("workflow.processLabel").toUpperCase()} {filesToConvert.length} {t("workflow.fileWord").toUpperCase()}
+            {t("workflow.processLabel")} {filesToConvert.length} {t("workflow.fileWord")}
           </motion.button>
         )}
 
@@ -889,7 +921,7 @@ export const ConversionPanel = memo(function ConversionPanel() {
             whileTap={{ scale: 0.98 }}
           >
             <Pause className="w-5 h-5 fill-error-500" />
-            {t("workflow.abortLabel").toUpperCase()} {convertingFiles.length} {t("workflow.activeLabel").toUpperCase()}
+            {t("workflow.abortLabel")} {convertingFiles.length} {t("workflow.activeLabel")}
           </motion.button>
         )}
 
@@ -901,7 +933,7 @@ export const ConversionPanel = memo(function ConversionPanel() {
                 isDark ? "bg-success-500/10 text-success-500 border border-success-500/20" : "bg-success-50 text-success-600 border border-success-200/50"
               }`}>
                 <CheckCircle className="w-5 h-5" />
-                {t("workflow.allOperationsComplete").toUpperCase()}
+                {t("workflow.allOperationsComplete")}
               </div>
             ) : (
               <span className={`text-[11px] font-bold uppercase tracking-widest ${isDark ? "text-dark-500" : "text-dark-400"}`}>

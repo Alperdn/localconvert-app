@@ -57,8 +57,27 @@ fn bundled_root() -> Option<PathBuf> {
         .map(|p| p.join("engines"))
 }
 
+/// The bundled engine root for `id`. In `cargo test` builds ONLY, the speech
+/// engines resolve to this repo's staged `src-tauri/engines/` (the test
+/// binary lives in `target/`, where no `engines/` exists). The path is a
+/// compile-time constant - there is no runtime override, env var or setting
+/// that can redirect where a production build looks for these engines.
+fn bundled_root_for(id: EngineId) -> Option<PathBuf> {
+    #[cfg(test)]
+    if matches!(id, EngineId::Speech | EngineId::AudioFfmpeg | EngineId::AudioFfprobe) {
+        return Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("engines"));
+    }
+    let _ = id;
+    bundled_root()
+}
+
+/// `<engines root>/<engine dir>` for a bundled engine (existence not checked).
+pub fn bundled_engine_dir(id: EngineId) -> Option<PathBuf> {
+    Some(bundled_root_for(id)?.join(id.bundle_dir_name()))
+}
+
 fn bundled_path(id: EngineId) -> Option<PathBuf> {
-    let root = bundled_root()?;
+    let root = bundled_root_for(id)?;
     let dir = root.join(id.bundle_dir_name());
 
     // Defense in depth: the directory name is derived only from the fixed

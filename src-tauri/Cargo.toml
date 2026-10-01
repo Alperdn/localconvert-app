@@ -2,7 +2,7 @@
 name = "localconvert"
 version = "1.0.0"
 description = "A privacy-focused local file converter"
-authors = ["LocalConvert"]
+authors = ["MEB-Dönüştür"]
 edition = "2021"
 rust-version = "1.70"
 
@@ -39,6 +39,7 @@ lopdf = "0.33"  # MIT licensed PDF manipulation library
 encoding_rs = "0.8"  # MIT/Apache 2.0 text encoding library
 zip = { version = "2", default-features = false, features = ["deflate"] }  # MIT/Apache-2.0 - native ZIP, replaces 7z for the zip<->zip case
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp", "gif", "tiff"] }  # MIT/Apache-2.0 - pure-Rust raster codecs, replaces ImageMagick for common formats
+sha2 = "0.10"  # MIT/Apache-2.0 - pure-Rust SHA-256, used ONLY to verify bundled engine/model files against their manifests (no network, no I/O beyond reading the file being hashed)
 tiff = "0.11"  # MIT/Apache-2.0 - already an `image` transitive dependency; used directly only to check for a second IFD (multi-page TIFF) so that case can be rejected instead of silently converting page 1
 
 [target.'cfg(windows)'.dependencies]

@@ -13,6 +13,7 @@ import { Sidebar } from "./components/Sidebar";
 import { FileDropZone } from "./components/FileDropZone";
 import { FileList } from "./components/FileList";
 import { ConversionPanel } from "./components/ConversionPanel";
+import { SpeechDictationPage } from "./components/speech/SpeechDictationPage";
 import { SettingsModal } from "./components/SettingsModal";
 import { SystemStatusModal } from "./components/SystemStatusModal";
 import { ToolsSetupModal } from "./components/ToolsSetupModal";
@@ -61,6 +62,7 @@ function App() {
     closeVideoTrimmer,
     loadCapabilities,
     detectGpu,
+    activeView,
   } = useStore(
     useShallow((s) => ({
       files: s.files,
@@ -68,6 +70,7 @@ function App() {
       theme: s.settings.theme,
       playCompletionSound: s.settings.playCompletionSound,
       addFiles: s.addFiles,
+      activeView: s.activeView,
       isConverting: s.isConverting,
       pdfEditorFile: s.pdfEditorFile,
       closePdfEditor: s.closePdfEditor,
@@ -118,6 +121,9 @@ function App() {
   // Listen for Tauri native drag-drop events
   useEffect(() => {
     const unlistenDrop = listen<DragDropPayload>("tauri://drag-drop", async (event) => {
+      // Ses Dikte handles its own drops; a file dropped there must never be
+      // added to the converter's file list.
+      if (useStore.getState().activeView === "dictation") return;
       const paths = event.payload.paths;
       if (paths && paths.length > 0) {
         // Process dropped files
@@ -275,6 +281,9 @@ function App() {
 
           {/* Main Area */}
           <main className="flex-1 flex flex-col overflow-hidden glass-panel rounded-2xl border-0 shadow-xl relative animate-fadeIn group">
+            {activeView === "dictation" ? (
+              <SpeechDictationPage />
+            ) : (
             <AnimatePresence mode="wait">
               {files.length === 0 ? (
                 <motion.div
@@ -294,22 +303,53 @@ function App() {
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: -10 }}
                   transition={{ duration: 0.3, ease: "easeOut" }}
-                  className="absolute inset-0 flex flex-col overflow-hidden p-6"
+                  className="absolute inset-0 flex flex-col overflow-y-auto overflow-x-hidden shell:overflow-hidden p-4 xl:p-6"
                 >
-                  <div className="flex-1 overflow-hidden flex gap-6">
-                    {/* File List */}
-                    <div className="flex-1 overflow-hidden">
+                  {/* Step 4 responsive-SHELL pass: below the `shell` (1050px)
+                      breakpoint, the 3-column split itself - not just
+                      FileCard - was the problem. A fixed w-80 ConversionPanel
+                      plus a fixed-width Sidebar left too little room for the
+                      center FileList column at the Tauri-configured 900px
+                      minimum window width for ANY column layout to stay
+                      usable, so below `shell` the panel drops to its own row
+                      BELOW the file list instead of fighting it for
+                      horizontal space (`flex-col` here, `shell:flex-row`
+                      restores the side-by-side column layout once there's
+                      room for it). This motion.div already has a definite
+                      height (`absolute inset-0` against `main`), so letting
+                      IT scroll (`overflow-y-auto`) is what gives "stacked"
+                      mode one natural page-level vertical scrollbar instead
+                      of needing a second bounded scroll region purely for
+                      the now-taller stacked content; `shell:overflow-hidden`
+                      hands scrolling back to FileList/ConversionPanel's own
+                      internal scroll areas once they're side-by-side again
+                      and each has a bounded column height to scroll within. */}
+                  <div className="flex-1 flex flex-col shell:flex-row gap-4 xl:gap-6 shell:overflow-hidden">
+                    {/* File List - `shell:min-h-0` is required alongside
+                        `shell:flex-1`: a flex item's automatic min-height
+                        defaults to its content size, which would otherwise
+                        stop it from ever shrinking down to its allotted
+                        column height and force the row layout to overflow
+                        vertically instead of letting FileList's own internal
+                        scrollbar do its job. */}
+                    <div className="min-w-0 min-h-[360px] shrink-0 shell:flex-1 shell:shrink shell:min-h-0 shell:overflow-hidden">
                       <FileList />
                     </div>
 
-                    {/* Conversion Panel */}
-                    <div className="w-80 flex-shrink-0 flex flex-col h-full rounded-xl">
+                    {/* Conversion Panel - full width and natural (unbounded)
+                        height while stacked below the file list, so it never
+                        reads as a squeezed "phone column" when the window
+                        actually has plenty of width to spare; back to a
+                        fixed-width, full-height right column once side by
+                        side with FileList again. */}
+                    <div className="w-full shell:w-64 xl:w-80 shrink-0 shell:flex-shrink-0 flex flex-col shell:h-full rounded-xl">
                       <ConversionPanel />
                     </div>
                   </div>
                 </motion.div>
               )}
             </AnimatePresence>
+            )}
           </main>
         </div>
       </div>

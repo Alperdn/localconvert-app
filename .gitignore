@@ -41,5 +41,25 @@ coverage/
 src-tauri/engines/office/manifest.json
 src-tauri/engines/office/LibreOffice/
 src-tauri/engines/office/_staging/
+# The license/notice TEXT files must be committed: they have to ship with the
+# product (MPL-2.0 + bundled third-party attributions). Allowlist mirrors the
+# name filter in scripts/prepare-office-engine.ps1 (LICENSE, NOTICE, readme,
+# credits, third-party); anything else dropped here stays ignored.
 THIRD_PARTY_NOTICES/LibreOffice/*
 !THIRD_PARTY_NOTICES/LibreOffice/README.md
+!THIRD_PARTY_NOTICES/LibreOffice/readme*
+!THIRD_PARTY_NOTICES/LibreOffice/NOTICE*
+!THIRD_PARTY_NOTICES/LibreOffice/LICENSE*
+!THIRD_PARTY_NOTICES/LibreOffice/license*
+!THIRD_PARTY_NOTICES/LibreOffice/CREDITS*
+!THIRD_PARTY_NOTICES/LibreOffice/credits*
+!THIRD_PARTY_NOTICES/LibreOffice/third*party*
+
+# Ses Dikte engine payloads - populated by scripts/prepare-speech-engine.ps1
+# and scripts/prepare-ffmpeg-engine.ps1 (pinned, hash-verified). Never commit
+# the binaries/model; commit the scripts + THIRD_PARTY_NOTICES instead.
+src-tauri/engines/speech/bin/
+src-tauri/engines/speech/models/
+src-tauri/engines/ffmpeg/bin/
+# Synthetic speech fixtures - regenerate with scripts/generate-speech-fixtures.ps1
+src-tauri/tests/fixtures/speech/generated/

@@ -12,6 +12,7 @@ import {
   Archive,
   PenTool,
   Type,
+  Mic,
 } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 import { useStore, Category } from "../store/useStore";
@@ -45,10 +46,12 @@ export const Sidebar = memo(function Sidebar() {
   // tick, a capability load, GPU detection, ...) - not just on the fields
   // it actually renders. A narrow `useShallow` selector only re-renders
   // Sidebar when one of these four fields actually changes.
-  const { activeCategory, setActiveCategory, files, theme } = useStore(
+  const { activeCategory, setActiveCategory, activeView, setActiveView, files, theme } = useStore(
     useShallow((s) => ({
       activeCategory: s.activeCategory,
       setActiveCategory: s.setActiveCategory,
+      activeView: s.activeView,
+      setActiveView: s.setActiveView,
       files: s.files,
       theme: s.settings.theme,
     }))
@@ -63,7 +66,11 @@ export const Sidebar = memo(function Sidebar() {
   };
 
   return (
-    <aside className="w-64 h-full flex flex-col glass-panel rounded-2xl border-0 shadow-lg overflow-hidden z-10 relative">
+    // Step 4 responsive-layout pass: fixed width like ConversionPanel's -
+    // shrinking it below `xl` (see App.tsx's Main Content comment) gives the
+    // center FileList column the room it needs at the app's 900px minimum
+    // window width, without touching Sidebar's own internal layout.
+    <aside className="w-52 xl:w-64 h-full flex flex-col glass-panel rounded-2xl border-0 shadow-lg overflow-hidden z-10 relative">
       <div className="p-5 flex-1 overflow-y-auto custom-scrollbar">
         <h2 className={`text-xs font-bold uppercase tracking-widest mb-4 pl-2 ${
           isDark ? "text-dark-500" : "text-dark-400"
@@ -74,7 +81,7 @@ export const Sidebar = memo(function Sidebar() {
           {categories.map(([key, data]) => {
             const Icon = iconMap[data.icon] || Files;
             const count = getCategoryCount(key);
-            const isActive = activeCategory === key;
+            const isActive = activeView === "convert" && activeCategory === key;
 
             return (
               <motion.button
@@ -128,6 +135,36 @@ export const Sidebar = memo(function Sidebar() {
             );
           })}
         </nav>
+
+        {/* Ses Dikte (speech-to-text) is its own top-level feature, NOT the
+            "Ses" audio-conversion category above - separate section and a
+            microphone icon (not the music-note) keep the two unambiguous. */}
+        <div className={`mt-4 pt-4 border-t ${isDark ? "border-dark-700/50" : "border-dark-100"}`}>
+          <motion.button
+            data-testid="nav-dictation"
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium transition-colors duration-200 relative overflow-hidden ${
+              activeView === "dictation"
+                ? "text-white"
+                : isDark
+                  ? "text-dark-300 hover:text-white hover:bg-dark-700/40"
+                  : "text-dark-600 hover:text-dark-900 hover:bg-white/50"
+            }`}
+            onClick={() => setActiveView("dictation")}
+            whileHover={activeView !== "dictation" ? { x: 4 } : undefined}
+            whileTap={{ scale: 0.98 }}
+            aria-current={activeView === "dictation" ? "page" : undefined}
+          >
+            {activeView === "dictation" && (
+              <motion.div
+                layoutId="activeCategoryBg"
+                className="absolute inset-0 bg-accent-gradient opacity-90 backdrop-blur-sm -z-10"
+                transition={{ type: "spring", stiffness: 300, damping: 25 }}
+              />
+            )}
+            <Mic className={`w-4 h-4 z-10 ${activeView === "dictation" ? "text-white" : "text-rose-500"}`} />
+            <span className="flex-1 text-left z-10">{t("nav.dictation")}</span>
+          </motion.button>
+        </div>
       </div>
 
       {/* Quick Stats */}

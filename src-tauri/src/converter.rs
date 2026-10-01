@@ -777,8 +777,12 @@ fn convert_document(
         };
     }
     
-    // Use pandoc for markdown, HTML, and text conversions (non-PDF inputs)
-    let pandoc_formats = ["md", "markdown", "html", "htm", "txt", "rst", "epub", "docx"];
+    // Use pandoc for markdown, HTML, and text conversions (non-PDF inputs).
+    // "docx" is deliberately excluded: a DOCX input must fall through to
+    // the bundled `engines::office` (LibreOffice) path below rather than a
+    // separately-installed `pandoc`, matching every other Office format
+    // (XLSX, PPTX, ODT, DOC, RTF).
+    let pandoc_formats = ["md", "markdown", "html", "htm", "txt", "rst", "epub"];
     
     if pandoc_formats.contains(&input_ext.as_str()) || pandoc_formats.contains(&output_format_clean.as_str()) {
         let args = vec![
@@ -1484,4 +1488,46 @@ pub fn compress_video_helper(
     
     run_command("ffmpeg", &args)?;
     Ok(output.to_string())
+}
+
+#[cfg(test)]
+mod document_routing_tests {
+    use super::*;
+
+    // Regression test for a routing bug where "docx" was listed in
+    // `pandoc_formats`, so every DOCX conversion silently depended on a
+    // separately-installed system `pandoc` instead of the bundled
+    // `engines::office` (LibreOffice) engine every other Office format
+    // uses. This assertion holds regardless of which engine tier is
+    // actually available in the environment running the test: either the
+    // bundled/system Office engine reports its own structured error, or
+    // (if truly unavailable) `OFFICE_ENGINE_NOT_AVAILABLE` - never a raw
+    // "Failed to execute pandoc" string.
+    #[test]
+    fn docx_to_pdf_never_falls_back_to_pandoc() {
+        let job_dir = std::env::temp_dir().join(format!(
+            "localconvert_docx_routing_test_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&job_dir).unwrap();
+
+        let options = ConversionOptions::default();
+        let result = convert_document(
+            "input.docx",
+            job_dir.join("output.pdf").to_str().unwrap(),
+            "pdf",
+            &options,
+            None,
+            &job_dir,
+        );
+
+        let _ = std::fs::remove_dir_all(&job_dir);
+
+        let err = result.unwrap_err();
+        assert!(
+            !err.to_lowercase().contains("pandoc"),
+            "DOCX -> PDF must route through the bundled Office engine, not system pandoc: {}",
+            err
+        );
+    }
 }

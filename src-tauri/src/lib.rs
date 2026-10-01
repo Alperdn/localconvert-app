@@ -6,6 +6,7 @@ mod native;
 mod pdf_text_editor;
 mod reconstruction;
 mod security;
+mod speech;
 mod tools;
 mod types;
 
@@ -54,6 +55,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
+        // Ses Dikte: single-slot job registry (max 1 concurrent transcription).
+        .manage(std::sync::Arc::new(speech::job::JobRegistry::default()))
         .setup(|app| {
             // Initialize app data directory
             let app_data_dir = app.path().app_data_dir().expect("Failed to get app data dir");
@@ -70,6 +73,8 @@ pub fn run() {
             // a previous run that crashed or was force-killed before its
             // Drop handler could run (see security::temp::JobTempDir).
             security::temp::cleanup_stale_job_dirs();
+            // Same for Ses Dikte job dirs (normalized WAVs / recordings).
+            speech::job::cleanup_stale_speech_dirs();
             
             Ok(())
         })
@@ -119,6 +124,11 @@ pub fn run() {
             // Phase 1 - Secure Desktop Foundation
             commands::authorize_fs_path,
             commands::system_status,
+            speech::commands::speech_get_status,
+            speech::commands::speech_get_limits,
+            speech::commands::speech_inspect_file,
+            speech::commands::speech_start_file_job,
+            speech::commands::speech_cancel_job,
             // V1 dependency architecture - backend-computed capability
             // model (see capabilities.rs)
             capabilities::get_capabilities,

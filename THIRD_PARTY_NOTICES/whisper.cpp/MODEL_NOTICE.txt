@@ -1,0 +1,2 @@
+﻿Whisper model weights (OpenAI) are MIT licensed; ggml conversion by ggerganov.
+Model: ggml-small-q5_1  Source: huggingface.co/ggerganov/whisper.cpp @ 5359861c739e955e79d9a303bcbc70fb988958b1  License: MIT

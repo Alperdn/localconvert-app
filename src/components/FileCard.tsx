@@ -25,6 +25,7 @@ import {
   Edit3,
   Scissors,
   GripVertical,
+  RotateCcw,
 } from "lucide-react";
 import { memo, useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -140,6 +141,7 @@ export const FileCard = memo(function FileCard({ file, dragControls }: FileCardP
     openPdfEditor,
     openVideoTrimmer,
     getCapability,
+    retryFile,
   } = useStore(
     useShallow((s) => ({
       removeFile: s.removeFile,
@@ -154,6 +156,7 @@ export const FileCard = memo(function FileCard({ file, dragControls }: FileCardP
       openPdfEditor: s.openPdfEditor,
       openVideoTrimmer: s.openVideoTrimmer,
       getCapability: s.getCapability,
+      retryFile: s.retryFile,
       // Must stay in the subscribed slice (even though only read
       // indirectly via getCapability) so the card re-renders once
       // loadCapabilities() resolves - see the ConversionPanel selector's
@@ -212,6 +215,15 @@ export const FileCard = memo(function FileCard({ file, dragControls }: FileCardP
     openVideoTrimmer(file.path, file.name, file.id);
   };
 
+  // Step 4 UI-acceptance fix pass (Bug 2/F): the explicit, single retry
+  // path for an errored file - see retryFile's doc comment in useStore.ts.
+  // Deliberately stops event bubbling so it can sit right next to the
+  // selection checkbox without toggling selection at the same time.
+  const handleRetry = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    retryFile(file.id);
+  };
+
   const handleToggleSelect = () => {
     if (isSelected) {
       deselectFile(file.id);
@@ -267,7 +279,7 @@ export const FileCard = memo(function FileCard({ file, dragControls }: FileCardP
 
   return (
     <div
-      className={`relative rounded-[20px] border-[1.5px] transition-all duration-300 isolate group ${getStatusBorderColor()} ${
+      className={`relative w-full min-w-0 rounded-[20px] border-[1.5px] transition-all duration-300 isolate group ${getStatusBorderColor()} ${
         isDark ? "bg-dark-800/80 backdrop-blur-xl" : "bg-white/80 backdrop-blur-xl shadow-sm hover:shadow-md"
       }`}
     >
@@ -313,109 +325,160 @@ export const FileCard = memo(function FileCard({ file, dragControls }: FileCardP
         </div>
       )}
 
-      <div className="p-4 flex items-center gap-4">
-        {/* Drag Handle - fixed-size hit area inside the card's own padded
-            row (not absolutely positioned against the edge), so it can't
-            overlap the border and stays vertically centered/aligned at any
-            window width. `touch-none` stops the browser's own touch
-            scroll gesture from fighting the drag gesture on the handle. */}
-        <div
-          className={`w-6 h-10 -ml-1 rounded-lg flex items-center justify-center shrink-0 touch-none select-none ${
-            dragControls ? "cursor-grab active:cursor-grabbing" : ""
-          } ${isDark ? "text-dark-500 hover:text-white hover:bg-dark-700/50" : "text-dark-300 hover:text-dark-900 hover:bg-dark-100/50"}`}
-          onPointerDown={(e) => dragControls?.start(e)}
-        >
-          <GripVertical className="w-4 h-4" />
+      {/* Step 4 responsive-layout pass: a single unbroken `flex items-center`
+          row (drag/checkbox/icon/name/metadata/actions/format/status/remove
+          all as siblings) has a hard floor - once every shrink-0 control is
+          already at its minimum size, a narrow window has nowhere left to
+          give, and the row simply overflows its own children on top of each
+          other instead of wrapping. Splitting into two always-stacked rows
+          (identity: drag/checkbox/icon/name/remove; details: metadata +
+          actions + format, indented under the name) means neither row ever
+          needs to fit more than a handful of controls side by side, and
+          `flex-wrap` on the details row lets ITS contents (which vary the
+          most - 0-3 action buttons depending on file type/status) reflow
+          onto their own line rather than collide, at any window width down
+          to the Tauri-configured 900px minimum. */}
+      <div className="p-4 flex flex-col gap-2">
+        {/* Row 1: drag handle, checkbox, icon, filename, remove */}
+        <div className="flex items-center gap-4">
+          {/* Drag Handle - fixed-size hit area inside the card's own padded
+              row (not absolutely positioned against the edge), so it can't
+              overlap the border and stays vertically centered/aligned at any
+              window width. `touch-none` stops the browser's own touch
+              scroll gesture from fighting the drag gesture on the handle. */}
+          <div
+            className={`w-6 h-10 -ml-1 rounded-lg flex items-center justify-center shrink-0 touch-none select-none ${
+              dragControls ? "cursor-grab active:cursor-grabbing" : ""
+            } ${isDark ? "text-dark-500 hover:text-white hover:bg-dark-700/50" : "text-dark-300 hover:text-dark-900 hover:bg-dark-100/50"}`}
+            onPointerDown={(e) => dragControls?.start(e)}
+          >
+            <GripVertical className="w-4 h-4" />
+          </div>
+
+          {/* Checkbox */}
+          <motion.button
+            className={`w-5 h-5 rounded-[6px] border-[1.5px] flex items-center justify-center transition-all shrink-0 ${
+              isSelected
+                ? "bg-brand border-brand shadow-[0_0_10px_rgba(139,92,246,0.5)]"
+                : isDark
+                  ? "border-dark-500 hover:border-brand bg-dark-900/50"
+                  : "border-dark-300 hover:border-brand bg-white"
+            }`}
+            onClick={handleToggleSelect}
+            whileHover={{ scale: 1.15 }}
+            whileTap={{ scale: 0.85 }}
+          >
+            {isSelected && <Check className="w-3.5 h-3.5 text-white" strokeWidth={3} />}
+          </motion.button>
+
+          {/* Icon / Image Preview */}
+          {file.previewLoading ? (
+            <div className={`w-14 h-14 rounded-2xl ${colorClass} flex items-center justify-center shadow-lg shrink-0`}>
+              <Loader2 className="w-6 h-6 animate-spin" />
+            </div>
+          ) : (file.previewUrl || file.thumbnail) && !imageError ? (
+            <div
+              className="relative w-14 h-14 rounded-2xl overflow-hidden cursor-pointer preview-group shrink-0 shadow-lg border border-dark-100/10"
+              onClick={() => {
+                if (file.category === "image" && file.previewUrl) {
+                  setPreviewImageId(file.id);
+                } else if (file.category === "video") {
+                  handleOpenVideoTrimmer();
+                }
+              }}
+            >
+              <img
+                src={file.previewUrl || file.thumbnail}
+                alt={file.name}
+                className="w-14 h-14 object-cover rounded-2xl transition-transform duration-500 group-hover:scale-110"
+                onError={() => setImageError(true)}
+              />
+              <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center backdrop-blur-[2px]">
+                {file.category === "video" ? (
+                  <Scissors className="w-5 h-5 text-white drop-shadow-md" />
+                ) : (
+                  <Maximize2 className="w-5 h-5 text-white drop-shadow-md" />
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className={`w-14 h-14 rounded-2xl ${colorClass} flex items-center justify-center shrink-0 shadow-sm border border-white/5`}>
+              <Icon className="w-7 h-7 drop-shadow-sm" />
+            </div>
+          )}
+
+          {/* Filename - `truncate` (overflow:hidden + text-overflow:ellipsis
+              + white-space:nowrap) clips visually without ever growing the
+              box; the native `title` attribute surfaces the full name on
+              hover without touching layout at all (no popover to position,
+              nothing to reflow). `min-w-0` on this wrapper is what lets it
+              actually shrink below its text's intrinsic width inside the
+              flex row instead of forcing the row wider. */}
+          <div className="flex-1 min-w-0">
+            <h3
+              className={`font-bold text-[15px] truncate ${isDark ? "text-white" : "text-dark-900"}`}
+              title={file.name}
+            >
+              {file.name}
+            </h3>
+          </div>
+
+          {/* Remove Button */}
+          <motion.button
+            className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all shrink-0 ${
+              isDark
+                ? "hover:bg-error-500/20 text-dark-500 hover:text-error-500"
+                : "hover:bg-error-500/10 text-dark-400 hover:text-error-500"
+            }`}
+            onClick={() => removeFile(file.id)}
+            whileHover={{ scale: 1.15, rotate: 90 }}
+            whileTap={{ scale: 0.85 }}
+            disabled={file.status === "converting"}
+            title={t("workflow.removeFile")}
+          >
+            <X className="w-5 h-5" />
+          </motion.button>
         </div>
 
-        {/* Checkbox */}
-        <motion.button
-          className={`w-5 h-5 rounded-[6px] border-[1.5px] flex items-center justify-center transition-all shrink-0 ${
-            isSelected
-              ? "bg-brand border-brand shadow-[0_0_10px_rgba(139,92,246,0.5)]"
-              : isDark
-                ? "border-dark-500 hover:border-brand bg-dark-900/50"
-                : "border-dark-300 hover:border-brand bg-white"
-          }`}
-          onClick={handleToggleSelect}
-          whileHover={{ scale: 1.15 }}
-          whileTap={{ scale: 0.85 }}
-        >
-          {isSelected && <Check className="w-3.5 h-3.5 text-white" strokeWidth={3} />}
-        </motion.button>
-
-        {/* Icon / Image Preview */}
-        {file.previewLoading ? (
-          <div className={`w-14 h-14 rounded-2xl ${colorClass} flex items-center justify-center shadow-lg shrink-0`}>
-            <Loader2 className="w-6 h-6 animate-spin" />
-          </div>
-        ) : (file.previewUrl || file.thumbnail) && !imageError ? (
-          <div 
-            className="relative w-14 h-14 rounded-2xl overflow-hidden cursor-pointer preview-group shrink-0 shadow-lg border border-dark-100/10"
-            onClick={() => {
-              if (file.category === "image" && file.previewUrl) {
-                setPreviewImageId(file.id);
-              } else if (file.category === "video") {
-                handleOpenVideoTrimmer();
-              }
-            }}
-          >
-            <img
-              src={file.previewUrl || file.thumbnail}
-              alt={file.name}
-              className="w-14 h-14 object-cover rounded-2xl transition-transform duration-500 group-hover:scale-110"
-              onError={() => setImageError(true)}
-            />
-            <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center backdrop-blur-[2px]">
-              {file.category === "video" ? (
-                <Scissors className="w-5 h-5 text-white drop-shadow-md" />
-              ) : (
-                <Maximize2 className="w-5 h-5 text-white drop-shadow-md" />
-              )}
-            </div>
-          </div>
-        ) : (
-          <div className={`w-14 h-14 rounded-2xl ${colorClass} flex items-center justify-center shrink-0 shadow-sm border border-white/5`}>
-            <Icon className="w-7 h-7 drop-shadow-sm" />
-          </div>
-        )}
-
-        {/* File Info */}
-        <div className="flex-1 min-w-0 flex flex-col justify-center">
-          <h3 className={`font-bold text-[15px] truncate mb-1 ${isDark ? "text-white" : "text-dark-900"}`} title={file.name}>
-            {file.name}
-          </h3>
-          <div className={`flex items-center gap-2 text-xs font-medium tracking-wide ${isDark ? "text-dark-400" : "text-dark-500"}`}>
-            <span className={`uppercase px-1.5 py-0.5 rounded text-[10px] font-bold ${
+        {/* Row 2: metadata (indented under the filename) + actions/format/
+            status. `flex-wrap` lets the two halves drop onto separate lines
+            - and lets the metadata badges themselves wrap - instead of
+            overlapping once the window is too narrow for both to fit on one
+            line; nothing here is absolutely positioned except the format
+            dropdown's own popover (anchored to its own trigger, not the
+            row), so nothing here can visually collide with a sibling. */}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 pl-[144px]">
+          <div className={`flex items-center flex-wrap gap-x-2 gap-y-1 min-w-0 flex-1 text-xs font-medium tracking-wide ${isDark ? "text-dark-400" : "text-dark-500"}`}>
+            <span className={`uppercase px-1.5 py-0.5 rounded text-[10px] font-bold shrink-0 ${
               isDark ? "bg-dark-700/50 text-dark-300" : "bg-dark-100/50 text-dark-600"
             }`}>{file.extension}</span>
-            <span className="w-1 h-1 rounded-full bg-current opacity-40"></span>
-            <span>{formatFileSize(file.size)}</span>
-            
+            <span className="w-1 h-1 rounded-full bg-current opacity-40 shrink-0"></span>
+            <span className="shrink-0">{formatFileSize(file.size)}</span>
+
             {file.duration !== undefined && file.duration !== null && (
               <>
-                <span className="w-1 h-1 rounded-full bg-current opacity-40"></span>
-                <span className="flex items-center gap-1">
+                <span className="w-1 h-1 rounded-full bg-current opacity-40 shrink-0"></span>
+                <span className="flex items-center gap-1 shrink-0">
                   <Clock className="w-3 h-3" />
                   {formatVideoDuration(file.duration)}
                 </span>
               </>
             )}
-            
+
             {(file.resolution || file.codec) && (
               <>
-                <span className="w-1 h-1 rounded-full bg-current opacity-40"></span>
-                <span>
+                <span className="w-1 h-1 rounded-full bg-current opacity-40 shrink-0"></span>
+                <span className="truncate">
                   {file.resolution} {file.codec ? `(${file.codec})` : ""}
                 </span>
               </>
             )}
-            
+
             {file.status === "completed" && file.outputPath && (
               <>
-                <span className="w-1 h-1 rounded-full bg-current opacity-40"></span>
+                <span className="w-1 h-1 rounded-full bg-current opacity-40 shrink-0"></span>
                 <motion.button
-                  className="flex items-center gap-1 text-brand hover:text-brand-light transition-colors font-bold"
+                  className="flex items-center gap-1 text-brand hover:text-brand-light transition-colors font-bold shrink-0"
                   onClick={() => handleOpenFileLocation(file.outputPath!)}
                   whileHover={{ scale: 1.05 }}
                 >
@@ -424,11 +487,11 @@ export const FileCard = memo(function FileCard({ file, dragControls }: FileCardP
                 </motion.button>
               </>
             )}
-            
+
             {estimatedSize !== null && file.status === "pending" && (
               <>
-                <span className="w-1 h-1 rounded-full bg-current opacity-40"></span>
-                <span className={`flex items-center gap-1 font-bold ${
+                <span className="w-1 h-1 rounded-full bg-current opacity-40 shrink-0"></span>
+                <span className={`flex items-center gap-1 font-bold shrink-0 ${
                   estimatedSize < file.size ? "text-success-500" : "text-amber-500"
                 }`}>
                   {estimatedSize < file.size ? (
@@ -440,150 +503,158 @@ export const FileCard = memo(function FileCard({ file, dragControls }: FileCardP
                 </span>
               </>
             )}
+
+            {file.error && (
+              <p className="text-[11px] font-bold text-error-500 flex items-center gap-1 bg-error-500/10 px-2 py-0.5 rounded-md truncate max-w-full" title={translateErrorCode(file.error)}>
+                <AlertCircle className="w-3 h-3 shrink-0" />
+                {translateErrorCode(file.error)}
+              </p>
+            )}
           </div>
-          {file.error && (
-            <p className="text-[11px] font-bold text-error-500 mt-1.5 truncate flex items-center gap-1 bg-error-500/10 px-2 py-0.5 rounded-md inline-flex w-fit max-w-full" title={translateErrorCode(file.error)}>
-              <AlertCircle className="w-3 h-3 shrink-0" />
-              {translateErrorCode(file.error)}
-            </p>
-          )}
-        </div>
 
-        {/* Format Selector with Edit/Trim buttons */}
-        <div className="relative flex items-center gap-2 shrink-0">
-          {/* Edit button for PDF files */}
-          {file.extension.toLowerCase() === "pdf" && file.status === "pending" && (
-            <motion.button
-              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl transition-all border ${
-                isDark
-                  ? "bg-amber-500/10 border-amber-500/20 text-amber-500 hover:bg-amber-500/20 hover:border-amber-500/30"
-                  : "bg-amber-50 border-amber-200/50 text-amber-600 hover:bg-amber-100"
-              }`}
-              onClick={() => openPdfEditor(file.path, file.name)}
-              whileHover={{ scale: 1.05, y: -2 }}
-              whileTap={{ scale: 0.95 }}
-              title={t("workflow.editPdf")}
-            >
-              <Edit3 className="w-4 h-4" />
-              <span className="text-[11px] font-bold uppercase tracking-wider">{t("workflow.edit")}</span>
-            </motion.button>
-          )}
+          {/* Actions + Format Selector */}
+          <div className="relative flex items-center flex-wrap gap-2 shrink-0">
+            {/* Edit button for PDF files */}
+            {file.extension.toLowerCase() === "pdf" && file.status === "pending" && (
+              <motion.button
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl transition-all border ${
+                  isDark
+                    ? "bg-amber-500/10 border-amber-500/20 text-amber-500 hover:bg-amber-500/20 hover:border-amber-500/30"
+                    : "bg-amber-50 border-amber-200/50 text-amber-600 hover:bg-amber-100"
+                }`}
+                onClick={() => openPdfEditor(file.path, file.name)}
+                whileHover={{ scale: 1.05, y: -2 }}
+                whileTap={{ scale: 0.95 }}
+                title={t("workflow.editPdf")}
+              >
+                <Edit3 className="w-4 h-4" />
+                <span className="text-[11px] font-bold uppercase tracking-wider">{t("workflow.edit")}</span>
+              </motion.button>
+            )}
 
-          {/* Trim button for video files - visibly disabled (not hidden)
-              when the video engine isn't available, per Feature
-              Availability Behavior (ENGINE_MISSING stays visible but
-              disabled with an explanation, section D/F). */}
-          {file.category === "video" && file.status === "pending" && (
+            {/* Retry button for errored files (Step 4 UI-acceptance fix
+                pass, Bug 2/F) - the only way to move an errored file back
+                into a convertible ("pending") state without the global
+                "Temizle" action. */}
+            {file.status === "error" && (
+              <motion.button
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl transition-all border ${
+                  isDark
+                    ? "bg-brand/10 border-brand/20 text-brand hover:bg-brand/20 hover:border-brand/30"
+                    : "bg-brand/5 border-brand/20 text-brand hover:bg-brand/10"
+                }`}
+                onClick={handleRetry}
+                whileHover={{ scale: 1.05, y: -2 }}
+                whileTap={{ scale: 0.95 }}
+                title={t("workflow.retry")}
+              >
+                <RotateCcw className="w-4 h-4" />
+                <span className="text-[11px] font-bold uppercase tracking-wider">{t("workflow.retry")}</span>
+              </motion.button>
+            )}
+
+            {/* Trim button for video files - visibly disabled (not hidden)
+                when the video engine isn't available, per Feature
+                Availability Behavior (ENGINE_MISSING stays visible but
+                disabled with an explanation, section D/F). */}
+            {file.category === "video" && file.status === "pending" && (
+              <motion.button
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-xl transition-all border ${
+                  videoTrimBlocked
+                    ? isDark
+                      ? "bg-dark-800 border-dark-700 text-dark-500 cursor-not-allowed opacity-60"
+                      : "bg-dark-50 border-dark-200 text-dark-400 cursor-not-allowed opacity-60"
+                    : isDark
+                      ? "bg-rose-500/10 border-rose-500/20 text-rose-500 hover:bg-rose-500/20 hover:border-rose-500/30"
+                      : "bg-rose-50 border-rose-200/50 text-rose-600 hover:bg-rose-100"
+                }`}
+                onClick={handleOpenVideoTrimmer}
+                disabled={videoTrimBlocked}
+                whileHover={videoTrimBlocked ? {} : { scale: 1.05, y: -2 }}
+                whileTap={videoTrimBlocked ? {} : { scale: 0.95 }}
+                title={videoTrimBlocked && videoTrimCapability ? describeUnavailableCapability(videoTrimCapability) : t("workflow.trimVideo")}
+              >
+                <Scissors className="w-4 h-4" />
+                <span className="text-[11px] font-bold uppercase tracking-wider">{t("workflow.trim")}</span>
+              </motion.button>
+            )}
+
             <motion.button
-              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl transition-all border ${
-                videoTrimBlocked
-                  ? isDark
-                    ? "bg-dark-800 border-dark-700 text-dark-500 cursor-not-allowed opacity-60"
-                    : "bg-dark-50 border-dark-200 text-dark-400 cursor-not-allowed opacity-60"
+              className={`flex items-center gap-2 px-4 py-2 rounded-xl transition-all border ${
+                currentFormat
+                  ? isDark ? "bg-brand/20 border-brand/30 text-brand shadow-glow" : "bg-brand/10 border-brand/20 text-brand shadow-[0_0_10px_rgba(139,92,246,0.15)]"
                   : isDark
-                    ? "bg-rose-500/10 border-rose-500/20 text-rose-500 hover:bg-rose-500/20 hover:border-rose-500/30"
-                    : "bg-rose-50 border-rose-200/50 text-rose-600 hover:bg-rose-100"
+                    ? "bg-dark-800 border-dark-600 text-dark-300 hover:text-white hover:border-dark-500"
+                    : "bg-white border-dark-200 text-dark-600 hover:text-dark-900 shadow-sm"
               }`}
-              onClick={handleOpenVideoTrimmer}
-              disabled={videoTrimBlocked}
-              whileHover={videoTrimBlocked ? {} : { scale: 1.05, y: -2 }}
-              whileTap={videoTrimBlocked ? {} : { scale: 0.95 }}
-              title={videoTrimBlocked && videoTrimCapability ? describeUnavailableCapability(videoTrimCapability) : t("workflow.trimVideo")}
+              onClick={() => setShowFormats(!showFormats)}
+              whileHover={{ scale: 1.03, y: -1 }}
+              whileTap={{ scale: 0.97 }}
+              disabled={file.status === "converting" || file.status === "completed"}
             >
-              <Scissors className="w-4 h-4" />
-              <span className="text-[11px] font-bold uppercase tracking-wider">{t("workflow.trim")}</span>
+              <span className="uppercase text-xs font-bold tracking-widest min-w-[50px] text-center">
+                {currentFormat || t("conversion.formatPlaceholder")}
+              </span>
+              <ChevronDown
+                className={`w-4 h-4 transition-transform ${showFormats ? "rotate-180" : ""}`}
+              />
             </motion.button>
-          )}
 
-          <motion.button
-            className={`flex items-center gap-2 px-4 py-2 rounded-xl transition-all border ${
-              currentFormat
-                ? isDark ? "bg-brand/20 border-brand/30 text-brand shadow-glow" : "bg-brand/10 border-brand/20 text-brand shadow-[0_0_10px_rgba(139,92,246,0.15)]"
-                : isDark
-                  ? "bg-dark-800 border-dark-600 text-dark-300 hover:text-white hover:border-dark-500"
-                  : "bg-white border-dark-200 text-dark-600 hover:text-dark-900 shadow-sm"
-            }`}
-            onClick={() => setShowFormats(!showFormats)}
-            whileHover={{ scale: 1.03, y: -1 }}
-            whileTap={{ scale: 0.97 }}
-            disabled={file.status === "converting" || file.status === "completed"}
-          >
-            <span className="uppercase text-xs font-bold tracking-widest min-w-[50px] text-center">
-              {currentFormat || t("conversion.formatPlaceholder")}
-            </span>
-            <ChevronDown
-              className={`w-4 h-4 transition-transform ${showFormats ? "rotate-180" : ""}`}
-            />
-          </motion.button>
+            {/* Format Dropdown */}
+            {showFormats && (
+              <motion.div
+                className={`absolute right-0 top-[calc(100%+8px)] w-48 rounded-2xl shadow-2xl z-50 overflow-hidden backdrop-blur-xl border ${
+                  isDark ? "bg-dark-800/90 border-dark-600" : "bg-white/90 border-dark-200"
+                }`}
+                initial={{ opacity: 0, y: -10, scale: 0.95 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -10, scale: 0.95 }}
+                transition={{ type: "spring", stiffness: 400, damping: 30 }}
+              >
+                <div className="p-2 max-h-64 overflow-y-auto custom-scrollbar">
+                  {outputFormats.length > 0 ? (
+                    <div className="flex flex-col gap-1">
+                      {outputFormats.map((format) => {
+                        const blocked = isFormatBlocked(format);
+                        return (
+                          <motion.button
+                            key={format}
+                            className={`w-full text-left px-4 py-2.5 rounded-xl text-xs font-bold uppercase tracking-widest transition-colors flex justify-between items-center ${
+                              blocked
+                                ? isDark
+                                  ? "text-dark-600 cursor-not-allowed opacity-50"
+                                  : "text-dark-300 cursor-not-allowed opacity-50"
+                                : currentFormat === format
+                                  ? "bg-brand/20 text-brand"
+                                  : isDark
+                                    ? "text-dark-300 hover:bg-dark-700/50 hover:text-white"
+                                    : "text-dark-600 hover:bg-dark-100 hover:text-dark-900"
+                            }`}
+                            onClick={() => !blocked && handleSelectFormat(format)}
+                            whileHover={blocked ? {} : { x: 4 }}
+                            title={blocked ? t("workflow.engineMissingShort") : undefined}
+                          >
+                            {format}
+                            {currentFormat === format && !blocked && <Check className="w-3.5 h-3.5" />}
+                          </motion.button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className={`px-3 py-2 text-xs font-bold text-center ${isDark ? "text-dark-500" : "text-dark-400"}`}>
+                      {t("conversion.noFormatsAvailable")}
+                    </p>
+                  )}
+                </div>
+              </motion.div>
+            )}
 
-          {/* Format Dropdown */}
-          {showFormats && (
-            <motion.div
-              className={`absolute right-0 top-[calc(100%+8px)] w-48 rounded-2xl shadow-2xl z-50 overflow-hidden backdrop-blur-xl border ${
-                isDark ? "bg-dark-800/90 border-dark-600" : "bg-white/90 border-dark-200"
-              }`}
-              initial={{ opacity: 0, y: -10, scale: 0.95 }}
-              animate={{ opacity: 1, y: 0, scale: 1 }}
-              exit={{ opacity: 0, y: -10, scale: 0.95 }}
-              transition={{ type: "spring", stiffness: 400, damping: 30 }}
-            >
-              <div className="p-2 max-h-64 overflow-y-auto custom-scrollbar">
-                {outputFormats.length > 0 ? (
-                  <div className="flex flex-col gap-1">
-                    {outputFormats.map((format) => {
-                      const blocked = isFormatBlocked(format);
-                      return (
-                        <motion.button
-                          key={format}
-                          className={`w-full text-left px-4 py-2.5 rounded-xl text-xs font-bold uppercase tracking-widest transition-colors flex justify-between items-center ${
-                            blocked
-                              ? isDark
-                                ? "text-dark-600 cursor-not-allowed opacity-50"
-                                : "text-dark-300 cursor-not-allowed opacity-50"
-                              : currentFormat === format
-                                ? "bg-brand/20 text-brand"
-                                : isDark
-                                  ? "text-dark-300 hover:bg-dark-700/50 hover:text-white"
-                                  : "text-dark-600 hover:bg-dark-100 hover:text-dark-900"
-                          }`}
-                          onClick={() => !blocked && handleSelectFormat(format)}
-                          whileHover={blocked ? {} : { x: 4 }}
-                          title={blocked ? t("workflow.engineMissingShort") : undefined}
-                        >
-                          {format}
-                          {currentFormat === format && !blocked && <Check className="w-3.5 h-3.5" />}
-                        </motion.button>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <p className={`px-3 py-2 text-xs font-bold text-center ${isDark ? "text-dark-500" : "text-dark-400"}`}>
-                    {t("conversion.noFormatsAvailable")}
-                  </p>
-                )}
-              </div>
-            </motion.div>
-          )}
+            {/* Status Icon */}
+            {getStatusIcon() && (
+              <div className="w-6 flex justify-center shrink-0">{getStatusIcon()}</div>
+            )}
+          </div>
         </div>
-
-        {/* Status Icon */}
-        <div className="w-10 flex justify-center shrink-0">{getStatusIcon()}</div>
-
-        {/* Remove Button */}
-        <motion.button
-          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all shrink-0 ${
-            isDark 
-              ? "hover:bg-error-500/20 text-dark-500 hover:text-error-500" 
-              : "hover:bg-error-500/10 text-dark-400 hover:text-error-500"
-          }`}
-          onClick={() => removeFile(file.id)}
-          whileHover={{ scale: 1.15, rotate: 90 }}
-          whileTap={{ scale: 0.85 }}
-          disabled={file.status === "converting"}
-          title={t("workflow.removeFile")}
-        >
-          <X className="w-5 h-5" />
-        </motion.button>
       </div>
 
       {/* Click outside to close dropdown */}

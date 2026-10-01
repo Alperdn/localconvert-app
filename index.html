@@ -1,10 +1,18 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<!-- lang="tr" is load-bearing, not cosmetic: the app's default (and
+     currently only reachable) locale is tr-TR, and several UI labels use
+     CSS `text-transform: uppercase` on correctly-authored Turkish text
+     (e.g. Sidebar's "İstatistikleri"). Per CSS Text Level 3, browsers pick
+     the Unicode Turkish/Azeri special-casing rule (dotted İ for lowercase
+     "i", not the default dotless "I") based on this `lang` attribute - with
+     "en" here, every such label silently corrupted to dotless "I" (the
+     originally reported "İSTATISTIK" bug). -->
+<html lang="tr" class="dark">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>LocalConvert - Private File Converter</title>
+    <title>MEB-Dönüştür - Gizlilik Odaklı Dosya Dönüştürücü</title>
   </head>
   <body class="bg-dark-900 text-white">
     <div id="root"></div>

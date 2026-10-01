@@ -53,7 +53,7 @@ export function WelcomeScreen({ onGetStarted }: WelcomeScreenProps) {
           transition={{ delay: 0.2 }}
         >
           Welcome to{" "}
-          <span className="text-transparent bg-clip-text bg-gradient-to-r from-brand-light via-brand to-accent-400 drop-shadow-md">LocalConvert</span>
+          <span className="text-transparent bg-clip-text bg-gradient-to-r from-brand-light via-brand to-accent-400 drop-shadow-md">MEB-Dönüştür</span>
         </motion.h1>
 
         <motion.p

@@ -70,6 +70,12 @@ export function useKeyboardShortcuts() {
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent) => {
+      // These are the CONVERTER's shortcuts (open files into the conversion list,
+      // Enter = start conversion, Delete = remove queued files, ...). They must be
+      // inert on the Ses Dikte page, or Enter/Ctrl+O there would act on files the
+      // user cannot even see.
+      if (useStore.getState().activeView === "dictation") return;
+
       // Don't trigger shortcuts when typing in inputs
       const target = event.target as HTMLElement;
       if (

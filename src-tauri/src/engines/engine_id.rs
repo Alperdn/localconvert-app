@@ -14,16 +14,29 @@ pub enum EngineId {
     Ffmpeg,
     Ffprobe,
     Tesseract,
+    /// whisper.cpp speech-to-text sidecar (bundled only - never PATH).
+    Speech,
+    /// Minimal, audio-only, LGPL FFmpeg built for speech preprocessing
+    /// (bundled only - never PATH). Deliberately a DIFFERENT identity from
+    /// `Ffmpeg`, which still means "whatever full FFmpeg the user has
+    /// installed" for video/audio conversion: the bundled build has no
+    /// video codecs, so it must never silently back those features.
+    AudioFfmpeg,
+    /// ffprobe from the same minimal build (see `AudioFfmpeg`).
+    AudioFfprobe,
 }
 
 impl EngineId {
     /// All known engines - used by the capability model and tests. Never
     /// used to turn external input into an `EngineId`.
-    pub const ALL: [EngineId; 4] = [
+    pub const ALL: [EngineId; 7] = [
         EngineId::Office,
         EngineId::Ffmpeg,
         EngineId::Ffprobe,
         EngineId::Tesseract,
+        EngineId::Speech,
+        EngineId::AudioFfmpeg,
+        EngineId::AudioFfprobe,
     ];
 
     /// The key this engine is registered under in `tools::TOOLS` / the
@@ -37,6 +50,8 @@ impl EngineId {
             EngineId::Ffmpeg => Some("ffmpeg"),
             EngineId::Ffprobe => None,
             EngineId::Tesseract => Some("tesseract"),
+            // Bundled-only: no PATH / system tier exists for these.
+            EngineId::Speech | EngineId::AudioFfmpeg | EngineId::AudioFfprobe => None,
         }
     }
 
@@ -48,6 +63,8 @@ impl EngineId {
             EngineId::Ffmpeg => "ffmpeg",
             EngineId::Ffprobe => "ffmpeg", // ships alongside ffmpeg
             EngineId::Tesseract => "tesseract",
+            EngineId::Speech => "speech",
+            EngineId::AudioFfmpeg | EngineId::AudioFfprobe => "ffmpeg",
         }
     }
 
@@ -89,6 +106,27 @@ impl EngineId {
                     "tesseract"
                 }
             }
+            EngineId::Speech => {
+                if cfg!(windows) {
+                    "bin/whisper-cli.exe"
+                } else {
+                    "bin/whisper-cli"
+                }
+            }
+            EngineId::AudioFfmpeg => {
+                if cfg!(windows) {
+                    "bin/ffmpeg.exe"
+                } else {
+                    "bin/ffmpeg"
+                }
+            }
+            EngineId::AudioFfprobe => {
+                if cfg!(windows) {
+                    "bin/ffprobe.exe"
+                } else {
+                    "bin/ffprobe"
+                }
+            }
         }
     }
 
@@ -100,6 +138,9 @@ impl EngineId {
             EngineId::Ffmpeg => "Video/audio conversion",
             EngineId::Ffprobe => "Media inspection",
             EngineId::Tesseract => "OCR",
+            EngineId::Speech => "Speech recognition",
+            EngineId::AudioFfmpeg => "Audio preprocessing",
+            EngineId::AudioFfprobe => "Audio inspection",
         }
     }
 
@@ -110,6 +151,9 @@ impl EngineId {
             EngineId::Ffmpeg => "FFMPEG",
             EngineId::Ffprobe => "FFPROBE",
             EngineId::Tesseract => "TESSERACT",
+            EngineId::Speech => "SPEECH",
+            EngineId::AudioFfmpeg => "AUDIO_FFMPEG",
+            EngineId::AudioFfprobe => "AUDIO_FFPROBE",
         }
     }
 

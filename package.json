@@ -10,7 +10,9 @@
     "test": "vitest run",
     "tauri": "tauri",
     "verify:office-engine": "powershell -ExecutionPolicy Bypass -File scripts/verify-office-engine-before-build.ps1",
-    "tauri:build:release": "npm run verify:office-engine && tauri build"
+    "verify:speech-engine": "powershell -ExecutionPolicy Bypass -File scripts/verify-speech-engine-before-build.ps1",
+    "verify:ffmpeg-engine": "powershell -ExecutionPolicy Bypass -File scripts/verify-ffmpeg-engine-before-build.ps1",
+    "tauri:build:release": "npm run verify:office-engine && npm run verify:speech-engine && npm run verify:ffmpeg-engine && tauri build"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",

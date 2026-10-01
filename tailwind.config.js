@@ -7,6 +7,17 @@ export default {
   darkMode: 'class',
   theme: {
     extend: {
+      // Step 4 responsive-shell pass: named breakpoint for the one layout
+      // decision that isn't well served by the default sm/md/lg/xl scale -
+      // "is there still room for Sidebar + FileList + ConversionPanel side
+      // by side, or does ConversionPanel need to stack below the file
+      // list". Measured against the app's own fixed-width chrome (see
+      // App.tsx's Main Content comment), not picked from a generic device
+      // breakpoint table. A named screen (vs. sprinkling `min-[1050px]:`
+      // across several files) keeps that one number in a single place.
+      screens: {
+        shell: '1050px',
+      },
       colors: {
         // Phase 1 - Secure Desktop Foundation: navy, not black.
         // Every `dark-*` utility in the app (bg-dark-800, text-dark-400,

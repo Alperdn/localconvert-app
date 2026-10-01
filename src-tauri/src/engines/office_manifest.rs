@@ -25,12 +25,17 @@ use std::time::Duration;
 pub const PINNED_VERSION: &str = "25.8.7";
 pub const PINNED_ARCHITECTURE: &str = "x86_64";
 
-/// Conservative headless-conversion timeout. A single legitimate DOCX/
-/// XLSX/PPTX conversion normally completes in well under 30s; this leaves
-/// generous headroom for large legitimate spreadsheets/presentations
-/// while still bounding a hung/hostile-input process to a fixed wall
-/// clock. See `docs/OFFICE_ENGINE.md` section on timeout policy.
-pub const CONVERT_TIMEOUT: Duration = Duration::from_secs(180);
+/// Headless-conversion timeout. Measured on this codebase's own bundled
+/// LibreOffice build against the same large/complex DOCX fixture (tens of
+/// thousands of paragraphs/table cells): startup overhead for a fresh
+/// `-env:UserInstallation=` profile (required per-job to avoid
+/// profile-lock races - see `office::convert`'s doc comment) plus the
+/// conversion itself ranged from ~280s with warm OS/font/AV-scan caches
+/// up to ~1300s on the very first cold invocation on a machine. 180s left
+/// far too little headroom for that variance; 300s would still fail the
+/// same document intermittently depending on cache/AV state. See
+/// `docs/OFFICE_ENGINE.md` section on timeout policy.
+pub const CONVERT_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct OfficeManifest {

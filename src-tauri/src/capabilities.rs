@@ -11,6 +11,7 @@
 //! the backend contract first.
 
 use crate::engines::office_manifest::{self, OfficeEngineStatus};
+use crate::engines::speech::{self as speech_engine, SpeechEngineStatus};
 use crate::engines::{engine_id::EngineId, resolver};
 use crate::tools;
 use serde::Serialize;
@@ -41,6 +42,21 @@ fn capability(id: &str, state: CapabilityState, message: &str) -> Capability {
     }
 }
 
+/// Ses Dikte capability state from the backend self-check. The UI shows these
+/// as Hazir / Bilesen eksik / Henuz desteklenmiyor.
+pub(crate) fn speech_capability_state(status: SpeechEngineStatus) -> CapabilityState {
+    match status {
+        SpeechEngineStatus::Available => CapabilityState::Available,
+        // Present and valid but cannot run on this machine: not "missing".
+        SpeechEngineStatus::CpuUnsupported => CapabilityState::NotImplemented,
+        SpeechEngineStatus::EngineMissing
+        | SpeechEngineStatus::ModelMissing
+        | SpeechEngineStatus::EngineInvalid
+        | SpeechEngineStatus::RuntimeMissing
+        | SpeechEngineStatus::AudioPrepUnavailable => CapabilityState::EngineMissing,
+    }
+}
+
 /// Pure, synchronous computation so it's directly unit-testable without a
 /// Tauri runtime. The `#[tauri::command]` wrapper below just calls this.
 pub fn compute_capabilities() -> Vec<Capability> {
@@ -53,6 +69,11 @@ pub fn compute_capabilities() -> Vec<Capability> {
     let office_available = office_report.status == OfficeEngineStatus::Available;
     let ffmpeg_available = resolver::is_available(EngineId::Ffmpeg);
     let magick_available = tools::check_tool_installed("magick").installed;
+    // speech_transcription is computed from the real backend self-check
+    // (manifest + hashes of engine, model and audio-prep bundle + the engine
+    // actually starting on this CPU) - never assumed Available.
+    let speech_report = speech_engine::report();
+    let speech_state = speech_capability_state(speech_report.status);
 
     vec![
         // JPEG/PNG/WebP/BMP/GIF/TIFF conversion, resize, crop, and rotate
@@ -158,6 +179,11 @@ pub fn compute_capabilities() -> Vec<Capability> {
             "Convert and extract audio tracks.",
         ),
         capability(
+            "speech_transcription",
+            speech_state,
+            speech_report.message.as_str(),
+        ),
+        capability(
             "ocr",
             CapabilityState::NotImplemented,
             "OCR is not yet available in the app.",
@@ -189,6 +215,27 @@ mod tests {
             office.message,
             "Office conversion engine is not available on this installation."
         );
+    }
+
+    #[test]
+    fn speech_capability_state_mapping_covers_every_backend_status() {
+        use SpeechEngineStatus as S;
+        assert_eq!(speech_capability_state(S::Available), CapabilityState::Available);
+        assert_eq!(speech_capability_state(S::CpuUnsupported), CapabilityState::NotImplemented);
+        for missing in [S::EngineMissing, S::ModelMissing, S::EngineInvalid, S::RuntimeMissing, S::AudioPrepUnavailable] {
+            assert_eq!(speech_capability_state(missing), CapabilityState::EngineMissing, "{:?}", missing);
+        }
+    }
+
+    /// Never hardcoded Available: the capability must equal what the real
+    /// backend self-check says on this machine.
+    #[test]
+    fn speech_capability_is_computed_from_the_real_backend_check() {
+        let report = speech_engine::report();
+        let caps = compute_capabilities();
+        let cap = caps.iter().find(|c| c.id == "speech_transcription").unwrap();
+        assert_eq!(cap.state, speech_capability_state(report.status));
+        assert_eq!(cap.message, report.message);
     }
 
     #[test]
@@ -236,6 +283,7 @@ mod tests {
             "video_conversion",
             "video_trimming",
             "audio_extraction",
+            "speech_transcription",
             "ocr",
         ];
         let caps = compute_capabilities();

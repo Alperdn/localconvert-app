@@ -14,6 +14,8 @@ import {
   Ban,
 } from "lucide-react";
 import { useStore } from "../store/useStore";
+import type { SpeechEngineReport } from "../types/speech";
+import { availabilityOf } from "../utils/speech";
 import { t, translateCapabilityState, translateCapabilityCategory } from "../locales";
 import type { CapabilityState } from "../store/useStore";
 
@@ -82,6 +84,7 @@ export function SystemStatusModal({ onClose, isDark }: SystemStatusModalProps) {
   const [status, setStatus] = useState<PrivacyStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { capabilities, capabilitiesLoaded, loadCapabilities } = useStore();
+  const [speech, setSpeech] = useState<SpeechEngineReport | null>(null);
 
   useEffect(() => {
     invoke<PrivacyStatus>("system_status")
@@ -90,6 +93,9 @@ export function SystemStatusModal({ onClose, isDark }: SystemStatusModalProps) {
     if (!capabilitiesLoaded) {
       loadCapabilities();
     }
+    invoke<SpeechEngineReport>("speech_get_status")
+      .then(setSpeech)
+      .catch(() => setSpeech(null));
   }, [capabilitiesLoaded, loadCapabilities]);
 
   return (
@@ -230,8 +236,44 @@ export function SystemStatusModal({ onClose, isDark }: SystemStatusModalProps) {
                 </div>
               )}
 
+              {/* Konuşma Tanıma (Ses Dikte) - backend self-check result.
+                  Shows engine/model *names* only, never a filesystem path. */}
+              {speech && (
+                <div className="pt-3" data-testid="speech-status-block">
+                  <p className={`text-[11px] font-bold uppercase tracking-widest mb-2 ${isDark ? "text-dark-500" : "text-dark-400"}`}>
+                    {t("speechStatus.title")}
+                  </p>
+                  <StatusRow
+                    icon={speech.status === "AVAILABLE" ? CheckCircle2 : AlertTriangle}
+                    label={t("speechStatus.status")}
+                    detail={
+                      availabilityOf(speech.status) === "ready"
+                        ? t("speechStatus.ready")
+                        : availabilityOf(speech.status) === "unsupported"
+                          ? t("speechStatus.unsupported")
+                          : t("speechStatus.missing")
+                    }
+                    good={speech.status === "AVAILABLE"}
+                    isDark={isDark}
+                  />
+                  {speech.engine && (
+                    <StatusRow icon={CheckCircle2} label={t("speechStatus.engine")} detail={speech.engine} good isDark={isDark} />
+                  )}
+                  {speech.model && (
+                    <StatusRow icon={CheckCircle2} label={t("speechStatus.model")} detail={speech.model} good isDark={isDark} />
+                  )}
+                  <StatusRow
+                    icon={speech.languages.includes("tr") ? CheckCircle2 : AlertTriangle}
+                    label={t("speechStatus.language")}
+                    detail={speech.languages.includes("tr") ? t("speechStatus.languageTurkishSupported") : t("speechStatus.languageUnknown")}
+                    good={speech.languages.includes("tr")}
+                    isDark={isDark}
+                  />
+                </div>
+              )}
+
               <p className={`text-[11px] pt-3 pb-1 ${isDark ? "text-dark-500" : "text-dark-400"}`}>
-                LocalConvert v{status.app_version} · {t("systemStatus.footerNote")}
+                MEB-Dönüştür v{status.app_version} · {t("systemStatus.footerNote")}
               </p>
             </>
           )}

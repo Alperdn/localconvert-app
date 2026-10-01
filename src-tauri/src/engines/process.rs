@@ -30,6 +30,8 @@ use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+#[cfg(windows)]
+const BELOW_NORMAL_PRIORITY_CLASS: u32 = 0x0000_4000;
 
 /// Environment variables that can redirect an engine's behavior toward
 /// attacker-controlled config/data (a plugin path, a fake tessdata
@@ -39,6 +41,10 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 /// deferred until engines are actually bundled (see `resolver.rs`), at
 /// which point PATH itself stops being relevant for these binaries too.
 const ENV_DENYLIST: &[&str] = &[
+    // ggml can load extra backend DLLs from this path.
+    "GGML_BACKEND_PATH",
+    // ffmpeg writes a log report to this location/config.
+    "FFREPORT",
     "TESSDATA_PREFIX",
     "MAGICK_CONFIGURE_PATH",
     "MAGICK_HOME",
@@ -49,6 +55,18 @@ const ENV_DENYLIST: &[&str] = &[
 
 /// Builds (but does not run) the `Command` for a resolved engine.
 pub fn build_command(resolved: &ResolvedEngine, args: &[String], job_dir: &Path) -> Command {
+    build_command_ex(resolved, args, job_dir, false)
+}
+
+/// Same as `build_command`; `low_priority` starts the child at below-normal
+/// CPU priority (used for long CPU-bound work such as speech recognition so
+/// the UI and the rest of the machine stay responsive).
+pub fn build_command_ex(
+    resolved: &ResolvedEngine,
+    args: &[String],
+    job_dir: &Path,
+    low_priority: bool,
+) -> Command {
     let mut cmd = Command::new(&resolved.path);
     cmd.args(args);
     cmd.current_dir(job_dir);
@@ -60,9 +78,163 @@ pub fn build_command(resolved: &ResolvedEngine, args: &[String], job_dir: &Path)
     }
 
     #[cfg(windows)]
-    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd.creation_flags(if low_priority {
+        CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS
+    } else {
+        CREATE_NO_WINDOW
+    });
+    #[cfg(not(windows))]
+    let _ = low_priority;
 
     cmd
+}
+
+/// How a cancellable run ended. Never carries a path; `stderr_tail` is for
+/// development diagnostics only (never shown to users).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcessEnd {
+    Success,
+    /// Exited non-zero (`None` = terminated without a code).
+    Failed(Option<i32>),
+    Cancelled,
+    TimedOut,
+    SpawnFailed,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProcessResult {
+    pub end: ProcessEnd,
+    pub stdout: String,
+    pub stderr_tail: String,
+}
+
+pub struct CancellableRun<'a> {
+    pub timeout: Option<Duration>,
+    pub cancel: &'a std::sync::atomic::AtomicBool,
+    pub low_priority: bool,
+    /// Called for every stderr line (split on CR or LF) from a reader thread.
+    pub on_stderr_line: Option<&'a (dyn Fn(&str) + Sync)>,
+}
+
+const STDOUT_CAP: usize = 8 * 1024 * 1024;
+const STDERR_TAIL_CAP: usize = 64 * 1024;
+
+/// Runs an engine with a cancel flag and optional timeout. Both pipes are
+/// drained on their own threads (no pipe-buffer deadlock for chatty tools).
+/// On cancel/timeout the child is killed and reaped before returning, so
+/// nothing is left running and any files it held open are released.
+pub fn run_cancellable(
+    resolved: &ResolvedEngine,
+    args: &[String],
+    job_dir: &Path,
+    opts: CancellableRun<'_>,
+) -> ProcessResult {
+    use std::io::Read;
+    use std::sync::atomic::Ordering;
+
+    let mut child = match build_command_ex(resolved, args, job_dir, opts.low_priority).spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            return ProcessResult {
+                end: ProcessEnd::SpawnFailed,
+                stdout: String::new(),
+                stderr_tail: e.to_string(),
+            }
+        }
+    };
+
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let start = Instant::now();
+
+    std::thread::scope(|scope| {
+        let out_h = scope.spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut p) = stdout_pipe {
+                let mut chunk = [0u8; 8192];
+                while let Ok(n) = p.read(&mut chunk) {
+                    if n == 0 {
+                        break;
+                    }
+                    if buf.len() < STDOUT_CAP {
+                        buf.extend_from_slice(&chunk[..n.min(STDOUT_CAP - buf.len())]);
+                    }
+                }
+            }
+            String::from_utf8_lossy(&buf).to_string()
+        });
+        let cb = opts.on_stderr_line;
+        let err_h = scope.spawn(move || {
+            let mut tail = String::new();
+            let mut line: Vec<u8> = Vec::new();
+            if let Some(mut p) = stderr_pipe {
+                let mut chunk = [0u8; 4096];
+                while let Ok(n) = p.read(&mut chunk) {
+                    if n == 0 {
+                        break;
+                    }
+                    for &b in &chunk[..n] {
+                        if b == b'\n' || b == b'\r' {
+                            if !line.is_empty() {
+                                let l = String::from_utf8_lossy(&line).to_string();
+                                if let Some(f) = cb {
+                                    f(&l);
+                                }
+                                tail.push_str(&l);
+                                tail.push('\n');
+                                if tail.len() > STDERR_TAIL_CAP {
+                                    let cut = tail.len() - STDERR_TAIL_CAP;
+                                    let cut = (cut..tail.len()).find(|i| tail.is_char_boundary(*i)).unwrap_or(0);
+                                    tail.drain(..cut);
+                                }
+                                line.clear();
+                            }
+                        } else if line.len() < 16 * 1024 {
+                            line.push(b);
+                        }
+                    }
+                }
+            }
+            tail
+        });
+
+        let end = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    break if status.success() {
+                        ProcessEnd::Success
+                    } else {
+                        ProcessEnd::Failed(status.code())
+                    };
+                }
+                Ok(None) => {
+                    if opts.cancel.load(Ordering::SeqCst) {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break ProcessEnd::Cancelled;
+                    }
+                    if let Some(t) = opts.timeout {
+                        if start.elapsed() >= t {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            break ProcessEnd::TimedOut;
+                        }
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(_) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break ProcessEnd::Failed(None);
+                }
+            }
+        };
+        ProcessResult {
+            end,
+            stdout: out_h.join().unwrap_or_default(),
+            stderr_tail: err_h.join().unwrap_or_default(),
+        }
+    })
 }
 
 /// Runs an engine to completion and maps failure into a structured,

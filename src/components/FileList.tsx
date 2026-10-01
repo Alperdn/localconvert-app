@@ -183,11 +183,20 @@ export const FileList = memo(function FileList() {
             </p>
           </div>
         ) : (
-          <Reorder.Group 
-            axis="y" 
-            values={filteredFiles} 
+          // Step 4 UI-hardening pass (Bug 2): a grid item's automatic
+          // min-width is "auto" by default, which resolves to its
+          // min-content size - and a long, unbroken filename's min-content
+          // IS its full unwrapped width (that's exactly what makes
+          // `truncate` possible in the first place: `white-space: nowrap`).
+          // Without `min-w-0` here and on each Reorder.Item below, that
+          // full width bubbled up and set the grid track wider than the
+          // scroll container, forcing a horizontal scrollbar instead of
+          // letting FileCard's own `truncate` actually do its job.
+          <Reorder.Group
+            axis="y"
+            values={filteredFiles}
             onReorder={handleReorder}
-            className="grid gap-3"
+            className="grid gap-3 min-w-0"
           >
             <AnimatePresence mode="popLayout">
               {filteredFiles.map((file, index) => (
@@ -256,7 +265,7 @@ const SortableFileCard = memo(function SortableFileCard({
       animate={{ opacity: 1, scale: 1, y: 0 }}
       exit={{ opacity: 0, scale: 0.95, height: 0, overflow: "hidden" }}
       transition={{ delay: index * 0.02, type: "spring", stiffness: 400, damping: 30 }}
-      className="relative group outline-none"
+      className="relative group outline-none min-w-0"
       whileDrag={{
         scale: 1.02,
         boxShadow: isDark ? "0 10px 30px rgba(0,0,0,0.5)" : "0 10px 30px rgba(0,0,0,0.1)",

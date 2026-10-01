@@ -1,24 +1,22 @@
-# LibreOffice third-party notices (placeholder)
+# LibreOffice third-party notices
 
-LocalConvert bundles a pinned LibreOffice build as its Office conversion
+MEB-Dönüştür bundles a pinned LibreOffice build as its Office conversion
 engine (see `docs/OFFICE_ENGINE.md`). LibreOffice is distributed under the
 Mozilla Public License 2.0, and its distribution bundles numerous
 third-party components under their own licenses (fonts, codecs, ICU,
 Python, etc.).
 
-`scripts/prepare-office-engine.ps1` copies the pinned installer's own
-`LICENSE`, `NOTICE`, `readme`/`readmes`, and any `credits`/`third-party`
-license files it ships into this directory verbatim, alongside the
-manifest's `license_notice_path` pointer, so the exact notices shipped in
-a given build always match the exact LibreOffice build in that installer.
-
-This placeholder exists only so the directory structure and the end-user
-"where do I find third-party notices" path are correct before the payload
-has been prepared on a build machine. It intentionally contains no
-license text of its own - populating it with the real files requires
-running the prep script against the actual pinned installer.
+This directory contains the LibreOffice license, notice, and credits files
+shipped with the product (`LICENSE.html`, `license.txt`, `NOTICE`,
+`CREDITS.fodt`), copied verbatim from the pinned LibreOffice installer.
+`scripts/prepare-office-engine.ps1` performs this copy (including any
+`readme`/`readmes` and `third-party` license files the installer ships),
+alongside the manifest's `license_notice_path` pointer, so the notices
+shipped in a given build match the exact LibreOffice build in that
+installer. This directory is the end-user location for third-party
+notices of the bundled Office engine.
 
 **Legal note:** an institutional/legal review of the bundled third-party
 notices is still required before final MEB distribution. Do not treat
-this placeholder, or the prep script copying files verbatim, as legal
-clearance.
+the presence of these files, or the prep script copying files verbatim, as
+legal clearance.

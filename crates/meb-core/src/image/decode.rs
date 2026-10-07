@@ -11,26 +11,36 @@ use std::path::Path;
 
 pub fn decode_bounded(path: &Path) -> Result<DynamicImage, ImageNativeError> {
     let reader = image::ImageReader::open(path)
-        .map_err(|e| ImageNativeError::new(ImageNativeErrorKind::DecodeFailed).with_detail(e.to_string()))?
+        .map_err(|e| {
+            ImageNativeError::new(ImageNativeErrorKind::DecodeFailed).with_detail(e.to_string())
+        })?
         .with_guessed_format()
-        .map_err(|e| ImageNativeError::new(ImageNativeErrorKind::DecodeFailed).with_detail(e.to_string()))?;
+        .map_err(|e| {
+            ImageNativeError::new(ImageNativeErrorKind::DecodeFailed).with_detail(e.to_string())
+        })?;
 
     if reader.format().is_none() {
-        return Err(ImageNativeError::new(ImageNativeErrorKind::UnsupportedFormat));
+        return Err(ImageNativeError::new(
+            ImageNativeErrorKind::UnsupportedFormat,
+        ));
     }
 
-    let (width, height) = reader
-        .into_dimensions()
-        .map_err(|e| ImageNativeError::new(ImageNativeErrorKind::DecodeFailed).with_detail(e.to_string()))?;
+    let (width, height) = reader.into_dimensions().map_err(|e| {
+        ImageNativeError::new(ImageNativeErrorKind::DecodeFailed).with_detail(e.to_string())
+    })?;
     check_dimensions(width, height)?;
 
     // Re-open: `into_dimensions()` consumes the reader without allocating
     // pixel data, so a second open is the simplest way to then decode the
     // full image now that bounds are confirmed safe.
     let reader = image::ImageReader::open(path)
-        .map_err(|e| ImageNativeError::new(ImageNativeErrorKind::DecodeFailed).with_detail(e.to_string()))?
+        .map_err(|e| {
+            ImageNativeError::new(ImageNativeErrorKind::DecodeFailed).with_detail(e.to_string())
+        })?
         .with_guessed_format()
-        .map_err(|e| ImageNativeError::new(ImageNativeErrorKind::DecodeFailed).with_detail(e.to_string()))?;
+        .map_err(|e| {
+            ImageNativeError::new(ImageNativeErrorKind::DecodeFailed).with_detail(e.to_string())
+        })?;
 
     reader.decode().map_err(ImageNativeError::from)
 }
@@ -53,9 +63,24 @@ pub fn check_single_frame(path: &Path) -> Result<(), ImageNativeError> {
     }
 }
 
+/// Same check as `check_single_frame`, keyed on an already-identified
+/// format instead of the path's extension - for callers (the web upload
+/// probe) whose files carry server-generated names.
+pub fn check_single_frame_for(
+    path: &Path,
+    format: super::NativeImageFormat,
+) -> Result<(), ImageNativeError> {
+    match format {
+        super::NativeImageFormat::Gif => check_gif_single_frame(path),
+        super::NativeImageFormat::Tiff => check_tiff_single_page(path),
+        _ => Ok(()),
+    }
+}
+
 fn open_bounded(path: &Path) -> Result<BufReader<File>, ImageNativeError> {
-    let file = File::open(path)
-        .map_err(|e| ImageNativeError::new(ImageNativeErrorKind::DecodeFailed).with_detail(e.to_string()))?;
+    let file = File::open(path).map_err(|e| {
+        ImageNativeError::new(ImageNativeErrorKind::DecodeFailed).with_detail(e.to_string())
+    })?;
     Ok(BufReader::new(file))
 }
 
@@ -63,41 +88,49 @@ fn check_gif_single_frame(path: &Path) -> Result<(), ImageNativeError> {
     use image::codecs::gif::GifDecoder;
     use image::AnimationDecoder;
 
-    let decoder = GifDecoder::new(open_bounded(path)?)
-        .map_err(|e| ImageNativeError::new(ImageNativeErrorKind::DecodeFailed).with_detail(e.to_string()))?;
+    let decoder = GifDecoder::new(open_bounded(path)?).map_err(|e| {
+        ImageNativeError::new(ImageNativeErrorKind::DecodeFailed).with_detail(e.to_string())
+    })?;
     let mut frames = decoder.into_frames();
     // Only decode as many frames as needed to know whether there's more
     // than one - never the whole animation.
     let has_first_frame = frames.next().is_some();
     if has_first_frame && frames.next().is_some() {
-        return Err(ImageNativeError::new(ImageNativeErrorKind::MultiFrameUnsupported));
+        return Err(ImageNativeError::new(
+            ImageNativeErrorKind::MultiFrameUnsupported,
+        ));
     }
     Ok(())
 }
 
 fn check_tiff_single_page(path: &Path) -> Result<(), ImageNativeError> {
-    let decoder = tiff::decoder::Decoder::new(open_bounded(path)?)
-        .map_err(|e| ImageNativeError::new(ImageNativeErrorKind::DecodeFailed).with_detail(e.to_string()))?;
+    let decoder = tiff::decoder::Decoder::new(open_bounded(path)?).map_err(|e| {
+        ImageNativeError::new(ImageNativeErrorKind::DecodeFailed).with_detail(e.to_string())
+    })?;
     // `more_images()` reports whether another IFD (page) follows - it does
     // not decode pixel data, so this stays cheap regardless of page count.
     if decoder.more_images() {
-        return Err(ImageNativeError::new(ImageNativeErrorKind::MultiFrameUnsupported));
+        return Err(ImageNativeError::new(
+            ImageNativeErrorKind::MultiFrameUnsupported,
+        ));
     }
     Ok(())
 }
 
 pub fn check_dimensions(width: u32, height: u32) -> Result<(), ImageNativeError> {
     if width == 0 || height == 0 {
-        return Err(ImageNativeError::new(ImageNativeErrorKind::InvalidDimensions));
+        return Err(ImageNativeError::new(
+            ImageNativeErrorKind::InvalidDimensions,
+        ));
     }
     if width > MAX_DIMENSION || height > MAX_DIMENSION {
-        return Err(
-            ImageNativeError::new(ImageNativeErrorKind::TooLarge).with_detail(format!("{}x{}", width, height))
-        );
+        return Err(ImageNativeError::new(ImageNativeErrorKind::TooLarge)
+            .with_detail(format!("{}x{}", width, height)));
     }
     let pixels = width as u64 * height as u64;
     if pixels > MAX_DECODED_PIXELS {
-        return Err(ImageNativeError::new(ImageNativeErrorKind::TooLarge).with_detail(format!("{} px", pixels)));
+        return Err(ImageNativeError::new(ImageNativeErrorKind::TooLarge)
+            .with_detail(format!("{} px", pixels)));
     }
     Ok(())
 }

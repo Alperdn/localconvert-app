@@ -6,6 +6,11 @@
 //! - Raster images (JPEG/PNG/WebP/BMP/GIF/TIFF) - see `image/`. SVG
 //!   rasterization and HEIC/AVIF/PSD still go through ImageMagick or are
 //!   not implemented - see `native::image` module docs.
+//!
+//! The image pipeline itself now lives in the Tauri-independent
+//! `meb-core` crate (`crates/meb-core/src/image`) so the web server can use
+//! the exact same engine. It is re-exported here unchanged, so every
+//! existing `crate::native::image::...` call site keeps working.
 
 pub mod archive_zip;
-pub mod image;
+pub use meb_core::image;

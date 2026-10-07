@@ -21,6 +21,9 @@ import { ImagePreviewModal } from "./components/ImagePreviewModal";
 import { VideoTrimmer } from "./components/VideoTrimmer";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { playCompletionSound } from "./utils/sounds";
+import { IS_WEB_RUNTIME } from "./platform/runtime";
+import { addBrowserFiles } from "./platform/webFiles";
+import { filesFromDataTransfer } from "./api/web";
 
 // Step 3 perf pass (section F): PdfEditor was a static import, so its
 // dependency graph (pdf-lib, pdfjs-dist, fabric - ~700KB gzipped combined,
@@ -118,8 +121,30 @@ function App() {
   // resolved value is computed - this component just reads the already-
   // resolved settings.theme below.
 
+  // Web runtime: drops anywhere in the window (e.g. onto the file list once
+  // files exist) add browser files; the drop zone handles its own drops.
+  // preventDefault also stops the browser from navigating to a dropped file.
+  useEffect(() => {
+    if (!IS_WEB_RUNTIME) return;
+    const onDragOver = (e: DragEvent) => e.preventDefault();
+    const onDrop = (e: DragEvent) => {
+      e.preventDefault();
+      // Ses Dikte is not available in the web runtime yet; never route a
+      // drop made there into the converter list.
+      if (useStore.getState().activeView === "dictation") return;
+      addBrowserFiles(filesFromDataTransfer(e.dataTransfer));
+    };
+    window.addEventListener("dragover", onDragOver);
+    window.addEventListener("drop", onDrop);
+    return () => {
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("drop", onDrop);
+    };
+  }, []);
+
   // Listen for Tauri native drag-drop events
   useEffect(() => {
+    if (IS_WEB_RUNTIME) return;
     const unlistenDrop = listen<DragDropPayload>("tauri://drag-drop", async (event) => {
       // Ses Dikte handles its own drops; a file dropped there must never be
       // added to the converter's file list.
@@ -148,6 +173,14 @@ function App() {
   }, [addFiles]);
 
   useEffect(() => {
+    // Web runtime: only the server-reported capabilities matter. There are
+    // no local tools to set up, no GPU to probe, and no startup files.
+    if (IS_WEB_RUNTIME) {
+      checkTools();
+      loadCapabilities();
+      return;
+    }
+
     // Check tools on first load
     checkTools().then(() => {
       // After checking tools, determine if this is first run

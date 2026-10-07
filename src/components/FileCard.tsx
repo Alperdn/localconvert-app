@@ -26,9 +26,11 @@ import {
   Scissors,
   GripVertical,
   RotateCcw,
+  Download,
 } from "lucide-react";
 import { memo, useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { IS_WEB_RUNTIME } from "../platform/runtime";
 import toast from "react-hot-toast";
 import { useShallow } from "zustand/react/shallow";
 import { useStore, ConversionFile } from "../store/useStore";
@@ -172,7 +174,8 @@ export const FileCard = memo(function FileCard({ file, dragControls }: FileCardP
   // Fetch size estimate when output format changes
   const currentFormat = file.outputFormat || globalOutputFormat;
   useEffect(() => {
-    if (currentFormat && file.status === "pending") {
+    // The size estimate reads the file from disk (desktop only).
+    if (currentFormat && file.status === "pending" && !IS_WEB_RUNTIME) {
       invoke<number>("get_file_size_estimate", {
         inputPath: file.path,
         outputFormat: currentFormat,
@@ -186,6 +189,18 @@ export const FileCard = memo(function FileCard({ file, dragControls }: FileCardP
   }, [currentFormat, file.path, file.status, defaultQuality]);
 
   const handleOpenFileLocation = async (path: string) => {
+    // Web runtime: `outputPath` is the server's ownership-checked download
+    // URL; the server sends it as an attachment with a safe file name.
+    if (IS_WEB_RUNTIME) {
+      const link = document.createElement("a");
+      link.href = path;
+      link.download = "";
+      link.rel = "noopener";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      return;
+    }
     try {
       await invoke("open_file_location", { path });
     } catch (error) {
@@ -482,8 +497,8 @@ export const FileCard = memo(function FileCard({ file, dragControls }: FileCardP
                   onClick={() => handleOpenFileLocation(file.outputPath!)}
                   whileHover={{ scale: 1.05 }}
                 >
-                  <FolderOpen className="w-3.5 h-3.5" />
-                  {t("conversion.open")}
+                  {IS_WEB_RUNTIME ? <Download className="w-3.5 h-3.5" /> : <FolderOpen className="w-3.5 h-3.5" />}
+                  {IS_WEB_RUNTIME ? t("conversion.download") : t("conversion.open")}
                 </motion.button>
               </>
             )}

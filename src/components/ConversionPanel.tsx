@@ -26,6 +26,7 @@ import { t, translateCapabilityState, describeUnavailableCapability } from "../l
 import { getOutputFormats } from "../types/formats";
 import { PresetsSelector } from "./PresetsSelector";
 import { capabilityIdForOutputFormat, getBlockedCapability, isCapabilityUsable } from "../utils/capabilityGating";
+import { IS_WEB_RUNTIME } from "../platform/runtime";
 
 // Step 3 perf pass (section D): zero props, so React.memo means this
 // (large, animation-heavy) panel only re-renders from its own narrowed
@@ -78,6 +79,8 @@ export const ConversionPanel = memo(function ConversionPanel() {
   const [hwEncoders, setHwEncoders] = useState<GpuInfo | null>(null);
 
   useEffect(() => {
+    // Hardware encoders are a desktop concern; the web server decides.
+    if (IS_WEB_RUNTIME) return;
     invoke<GpuInfo>("get_hardware_encoders")
       .then(setHwEncoders)
       .catch(console.error);
@@ -406,8 +409,9 @@ export const ConversionPanel = memo(function ConversionPanel() {
           </motion.div>
         )}
 
-        {/* Output Directory */}
-        <div className="space-y-2">
+        {/* Output Directory (desktop only: the web runtime downloads results
+            through the browser instead of writing to a chosen folder) */}
+        {!IS_WEB_RUNTIME && <div className="space-y-2">
           <label className={`text-[11px] font-bold tracking-widest uppercase ${isDark ? "text-dark-400" : "text-dark-500"}`}>{t("conversion.destination")}</label>
           <motion.button
             className={`w-full flex items-center justify-between px-4 py-3.5 rounded-xl text-left transition-all duration-300 group hover:shadow-lg ${
@@ -426,7 +430,7 @@ export const ConversionPanel = memo(function ConversionPanel() {
               </span>
             </div>
           </motion.button>
-        </div>
+        </div>}
 
         {/* Advanced Options Toggle */}
         <motion.button

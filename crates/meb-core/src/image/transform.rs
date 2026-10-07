@@ -3,21 +3,41 @@
 use super::error::{ImageNativeError, ImageNativeErrorKind};
 use image::DynamicImage;
 
-pub fn resize(img: &DynamicImage, width: u32, height: u32) -> Result<DynamicImage, ImageNativeError> {
+pub fn resize(
+    img: &DynamicImage,
+    width: u32,
+    height: u32,
+) -> Result<DynamicImage, ImageNativeError> {
     super::decode::check_dimensions(width, height)?;
     // Exact (non-aspect-preserving) resize - matches the previous
     // ImageMagick `-resize WxH!` behavior used by the resize command.
     Ok(img.resize_exact(width, height, image::imageops::FilterType::Lanczos3))
 }
 
-pub fn crop(img: &DynamicImage, x: u32, y: u32, width: u32, height: u32) -> Result<DynamicImage, ImageNativeError> {
+pub fn crop(
+    img: &DynamicImage,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) -> Result<DynamicImage, ImageNativeError> {
     if width == 0 || height == 0 {
-        return Err(ImageNativeError::new(ImageNativeErrorKind::InvalidDimensions));
+        return Err(ImageNativeError::new(
+            ImageNativeErrorKind::InvalidDimensions,
+        ));
     }
     let (img_w, img_h) = (img.width(), img.height());
-    if x >= img_w || y >= img_h || x.saturating_add(width) > img_w || y.saturating_add(height) > img_h {
-        return Err(ImageNativeError::new(ImageNativeErrorKind::InvalidDimensions)
-            .with_detail(format!("crop {}x{}+{}+{} outside {}x{}", width, height, x, y, img_w, img_h)));
+    if x >= img_w
+        || y >= img_h
+        || x.saturating_add(width) > img_w
+        || y.saturating_add(height) > img_h
+    {
+        return Err(
+            ImageNativeError::new(ImageNativeErrorKind::InvalidDimensions).with_detail(format!(
+                "crop {}x{}+{}+{} outside {}x{}",
+                width, height, x, y, img_w, img_h
+            )),
+        );
     }
     Ok(img.crop_imm(x, y, width, height))
 }
@@ -85,9 +105,18 @@ mod tests {
     #[test]
     fn rotate_90_and_270_swap_dimensions() {
         let img = sample(); // 4x2
-        assert_eq!((rotate(&img, 90).width(), rotate(&img, 90).height()), (2, 4));
-        assert_eq!((rotate(&img, 270).width(), rotate(&img, 270).height()), (2, 4));
-        assert_eq!((rotate(&img, 180).width(), rotate(&img, 180).height()), (4, 2));
+        assert_eq!(
+            (rotate(&img, 90).width(), rotate(&img, 90).height()),
+            (2, 4)
+        );
+        assert_eq!(
+            (rotate(&img, 270).width(), rotate(&img, 270).height()),
+            (2, 4)
+        );
+        assert_eq!(
+            (rotate(&img, 180).width(), rotate(&img, 180).height()),
+            (4, 2)
+        );
         assert_eq!((rotate(&img, 0).width(), rotate(&img, 0).height()), (4, 2));
     }
 }

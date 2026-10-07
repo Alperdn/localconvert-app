@@ -14,33 +14,10 @@ use crate::engines::office_manifest::{self, OfficeEngineStatus};
 use crate::engines::speech::{self as speech_engine, SpeechEngineStatus};
 use crate::engines::{engine_id::EngineId, resolver};
 use crate::tools;
-use serde::Serialize;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum CapabilityState {
-    Available,
-    EngineMissing,
-    NotImplemented,
-    #[allow(dead_code)]
-    DisabledByPolicy,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct Capability {
-    pub id: String,
-    pub state: CapabilityState,
-    /// Safe to show in the UI as-is - never a path or executable name.
-    pub message: String,
-}
-
-fn capability(id: &str, state: CapabilityState, message: &str) -> Capability {
-    Capability {
-        id: id.to_string(),
-        state,
-        message: message.to_string(),
-    }
-}
+// The capability types and the native-image entries are shared with the web
+// server via meb-core (one definition, same wire format).
+pub use meb_core::capabilities::{Capability, CapabilityState};
+use meb_core::capabilities::{capability, native_image_capabilities};
 
 /// Ses Dikte capability state from the backend self-check. The UI shows these
 /// as Hazir / Bilesen eksik / Henuz desteklenmiyor.
@@ -75,31 +52,12 @@ pub fn compute_capabilities() -> Vec<Capability> {
     let speech_report = speech_engine::report();
     let speech_state = speech_capability_state(speech_report.status);
 
-    vec![
-        // JPEG/PNG/WebP/BMP/GIF/TIFF conversion, resize, crop, and rotate
-        // are handled by the in-process native image pipeline (see
-        // native::image) and never need ImageMagick - so these stay
-        // AVAILABLE regardless of `magick_available`.
-        capability(
-            "image_conversion",
-            CapabilityState::Available,
-            "Convert between common image formats (JPEG, PNG, WebP, BMP, GIF, TIFF).",
-        ),
-        capability(
-            "image_resize",
-            CapabilityState::Available,
-            "Resize images.",
-        ),
-        capability(
-            "image_crop",
-            CapabilityState::Available,
-            "Crop images.",
-        ),
-        capability(
-            "image_rotate",
-            CapabilityState::Available,
-            "Rotate images in 90-degree steps.",
-        ),
+    // JPEG/PNG/WebP/BMP/GIF/TIFF conversion, resize, crop, and rotate are
+    // handled by the in-process native image pipeline (see meb_core::image)
+    // and never need ImageMagick - so these stay AVAILABLE regardless of
+    // `magick_available`. Same entries the web server reports.
+    let mut caps = native_image_capabilities();
+    caps.extend(vec![
         capability(
             "svg_rasterization",
             if magick_available {
@@ -188,7 +146,8 @@ pub fn compute_capabilities() -> Vec<Capability> {
             CapabilityState::NotImplemented,
             "OCR is not yet available in the app.",
         ),
-    ]
+    ]);
+    caps
 }
 
 #[tauri::command]

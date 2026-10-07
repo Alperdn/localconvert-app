@@ -1,0 +1,27 @@
+[package]
+name = "meb-core"
+version = "0.1.0"
+description = "Tauri-independent conversion core for MEB-Dönüştür (shared by the desktop app and the web server)"
+authors = ["MEB-Dönüştür"]
+license = "MIT"
+edition = "2021"
+publish = false
+
+# Deliberately NOT a Cargo workspace member yet: `src-tauri` (release profile
+# `panic = "abort"`) and `meb-server` (must unwind so one job's panic cannot
+# take the whole server down) need different panic strategies, and Cargo
+# profiles are workspace-wide. Each consumer depends on this crate by path.
+
+[lib]
+name = "meb_core"
+path = "src/lib.rs"
+
+[dependencies]
+# Same versions/features as src-tauri so both builds resolve identical code.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp", "gif", "tiff"] }  # MIT/Apache-2.0
+tiff = "0.11"  # MIT/Apache-2.0 - multi-page TIFF detection only
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+uuid = { version = "1", features = ["v4"] }
+serde_json = "1"

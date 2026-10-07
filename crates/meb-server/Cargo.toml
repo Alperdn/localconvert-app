@@ -1,0 +1,42 @@
+[package]
+name = "meb-server"
+version = "0.1.0"
+description = "MEB-Dönüştür web server (local development foundation)"
+authors = ["MEB-Dönüştür"]
+license = "MIT"
+edition = "2021"
+publish = false
+
+# Standalone package (not a Cargo workspace member) - see the comment in
+# crates/meb-core/Cargo.toml. Its own default release profile keeps
+# `panic = "unwind"`, which the job worker relies on: a panic inside one
+# conversion is caught and fails only that job (see src/worker.rs).
+
+[lib]
+name = "meb_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "meb-server"
+path = "src/main.rs"
+
+[dependencies]
+meb-core = { path = "../meb-core" }
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "time", "signal", "net"] }
+tokio-util = { version = "0.7", features = ["io"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+percent-encoding = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+# Builds request bodies that stall mid-upload (idle-timeout tests).
+futures-util = "0.3"
+http-body-util = "0.1"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif"] }

@@ -5,6 +5,8 @@ import toast from "react-hot-toast";
 import { useStore, FileInfo, getFilesToConvert } from "../store/useStore";
 import { getBlockedCapability } from "../utils/capabilityGating";
 import { describeUnavailableCapability } from "../locales";
+import { IS_WEB_RUNTIME } from "../platform/runtime";
+import { pickAndAddBrowserFiles } from "../platform/webFiles";
 
 export function useKeyboardShortcuts() {
   const {
@@ -24,6 +26,10 @@ export function useKeyboardShortcuts() {
   } = useStore();
 
   const handleOpenFiles = useCallback(async () => {
+    if (IS_WEB_RUNTIME) {
+      await pickAndAddBrowserFiles();
+      return;
+    }
     try {
       const selected = await open({
         multiple: true,

@@ -2,6 +2,8 @@ import { create } from "zustand";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, UnlistenFn } from "@tauri-apps/api/event";
 import { capabilityIdForFile, isCapabilityUsable } from "../utils/capabilityGating";
+import { IS_WEB_RUNTIME } from "../platform/runtime";
+import * as webApi from "../api/web";
 
 // Image extensions that can be previewed
 const PREVIEWABLE_IMAGE_EXTENSIONS = [
@@ -10,6 +12,9 @@ const PREVIEWABLE_IMAGE_EXTENSIONS = [
 
 // Helper to load image preview asynchronously
 async function loadImagePreview(path: string): Promise<string | null> {
+  // Web runtime: preview the browser's own copy (object URL) - the image is
+  // not uploaded just to be previewed.
+  if (IS_WEB_RUNTIME) return webApi.getLocalPreviewUrl(path);
   try {
     const dataUrl = await invoke<string>("get_image_preview", { path, maxSize: 200 });
     return dataUrl;
@@ -66,6 +71,9 @@ export interface ConversionFile extends FileInfo {
   speed: number | null;
   previewUrl: string | null;
   previewLoading: boolean;
+  /// Web runtime only: the server-generated id of this file's current/last
+  /// conversion job (used for cancel/delete/download). Never set on desktop.
+  webJobId?: string | null;
 }
 
 // Step 4 UI-acceptance fix pass (Bug 1/B): the single authoritative
@@ -620,7 +628,7 @@ export const useStore = create<Store>((set, get) => ({
             ),
           }));
         });
-      } else if (file.category === "video") {
+      } else if (file.category === "video" && !IS_WEB_RUNTIME) {
         // Fetch metadata
         invoke<{
           duration: number | null;
@@ -662,6 +670,10 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   removeFile: (id) => {
+    if (IS_WEB_RUNTIME) {
+      const file = get().files.find((f) => f.id === id);
+      if (file) releaseWebFile(file);
+    }
     set((state) => ({
       files: state.files.filter((f) => f.id !== id),
       selectedFiles: state.selectedFiles.filter((fid) => fid !== id),
@@ -669,6 +681,7 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   clearFiles: () => {
+    if (IS_WEB_RUNTIME) get().files.forEach(releaseWebFile);
     set({ files: [], selectedFiles: [] });
   },
 
@@ -818,6 +831,12 @@ export const useStore = create<Store>((set, get) => ({
   toolsChecked: false,
 
   checkTools: async () => {
+    // Web runtime: there are no locally installed tools to check - what the
+    // server can do is reported by loadCapabilities().
+    if (IS_WEB_RUNTIME) {
+      set({ tools: [], toolsChecked: true });
+      return;
+    }
     try {
       const tools = await invoke<ToolStatus[]>("check_tools");
       set({ tools, toolsChecked: true });
@@ -833,7 +852,9 @@ export const useStore = create<Store>((set, get) => ({
 
   loadCapabilities: async () => {
     try {
-      const capabilities = await invoke<Capability[]>("get_capabilities");
+      const capabilities = IS_WEB_RUNTIME
+        ? await webApi.getWebCapabilities()
+        : await invoke<Capability[]>("get_capabilities");
       set({ capabilities, capabilitiesLoaded: true });
     } catch (error) {
       console.error("Failed to load capabilities:", error);
@@ -847,6 +868,8 @@ export const useStore = create<Store>((set, get) => ({
   gpuInfo: null,
 
   detectGpu: async () => {
+    // Hardware/encoder choice is server policy in the web runtime.
+    if (IS_WEB_RUNTIME) return;
     try {
       const gpuInfo = await invoke<GpuInfo>("detect_gpu");
       set({ gpuInfo });
@@ -900,10 +923,11 @@ export const useStore = create<Store>((set, get) => ({
     filesToConvert.forEach(f => newActiveConversions.add(f.id));
     set({ isConverting: true, activeConversions: newActiveConversions });
 
-    // Set up progress listener (only if not already listening)
+    // Set up progress listener (only if not already listening). The web
+    // runtime gets progress per job over SSE instead (see webApi.watchJob).
     let unlisten: UnlistenFn | null = null;
     try {
-      unlisten = await listen<ConversionProgressEvent>("conversion-progress", (event) => {
+      if (!IS_WEB_RUNTIME) unlisten = await listen<ConversionProgressEvent>("conversion-progress", (event) => {
         const progress = event.payload;
         const currentFile = get().files.find((f) => f.id === progress.job_id);
         if (currentFile && currentFile.status === "converting") {
@@ -929,6 +953,19 @@ export const useStore = create<Store>((set, get) => ({
 
       const outputFormat = file.outputFormat || globalOutputFormat;
       if (!outputFormat) return;
+
+      if (IS_WEB_RUNTIME) {
+        const outcome = await convertSingleFileWeb(file, outputFormat, {
+          quality: options.quality ?? settings.defaultQuality,
+          width: options.width,
+          height: options.height,
+        });
+        const updatedActive = new Set(get().activeConversions);
+        updatedActive.delete(file.id);
+        set({ activeConversions: updatedActive });
+        batchResult[outcome].push(file.id);
+        return;
+      }
 
       // Use the file ID as the job ID for tracking
       const jobId = file.id;
@@ -1047,7 +1084,16 @@ export const useStore = create<Store>((set, get) => ({
 
   cancelConversion: async (jobId?: string) => {
     const { activeConversions } = get();
-    
+
+    // Web runtime: cancellation is authoritative on the server. The file's
+    // status follows the job's real terminal state (via watchJob) instead of
+    // being reset optimistically here.
+    if (IS_WEB_RUNTIME) {
+      const ids = jobId ? [jobId] : [...activeConversions];
+      ids.forEach(requestWebCancel);
+      return;
+    }
+
     if (jobId) {
       // Cancel specific job
       try {
@@ -1155,6 +1201,132 @@ export const useStore = create<Store>((set, get) => ({
   closeVideoTrimmer: () => set({ videoTrimmerFile: null }),
 }));
 
+// ── Web runtime conversion path ───────────────────────────────────────────
+// upload (server assigns file_id) -> create job (server assigns job_id) ->
+// follow the job's snapshots (SSE, polling fallback) -> download URL.
+// The browser never sends a path; the server owns every id and file.
+
+interface WebInFlight {
+  abort: AbortController;
+  jobId: string | null;
+  cancelled: boolean;
+}
+
+/// Conversions currently uploading or running, keyed by the store file id.
+const webInFlight = new Map<string, WebInFlight>();
+
+function setWebJobId(fileId: string, webJobId: string | null) {
+  useStore.setState((s) => ({
+    files: s.files.map((f) => (f.id === fileId ? { ...f, webJobId } : f)),
+  }));
+}
+
+async function convertSingleFileWeb(
+  file: ConversionFile,
+  outputFormat: string,
+  options: { quality?: number; width?: number; height?: number }
+): Promise<keyof ConversionBatchResult> {
+  const { setFileStatus } = useStore.getState();
+  const local = webApi.getLocalFile(file.path);
+  if (!local) {
+    setFileStatus(file.id, "error", 0, "FILE_NOT_AVAILABLE", undefined, null, null);
+    return "failed";
+  }
+
+  const entry: WebInFlight = { abort: new AbortController(), jobId: null, cancelled: false };
+  webInFlight.set(file.id, entry);
+  setFileStatus(file.id, "converting", 0, undefined, undefined, null, null);
+
+  // Progress: first half = real upload bytes, second half = the job's real
+  // (stage-based) progress reported by the server.
+  try {
+    const uploaded = await webApi.uploadFile(
+      local,
+      (fraction) => setFileStatus(file.id, "converting", Math.round(fraction * 50), undefined, undefined, null, null),
+      entry.abort.signal
+    );
+    if (entry.cancelled) {
+      setFileStatus(file.id, "pending", 0, undefined, undefined, null, null);
+      return "cancelled";
+    }
+
+    const jobOptions: webApi.WebConvertOptions = {};
+    if (options.quality !== undefined) {
+      jobOptions.quality = Math.min(100, Math.max(1, Math.round(options.quality)));
+    }
+    if (options.width && options.height) {
+      jobOptions.width = Math.round(options.width);
+      jobOptions.height = Math.round(options.height);
+    }
+
+    const created = await webApi.createConvertJob(uploaded.file_id, outputFormat, jobOptions);
+    entry.jobId = created.job_id;
+    setWebJobId(file.id, created.job_id);
+    if (entry.cancelled) void webApi.cancelJob(created.job_id).catch(() => {});
+
+    const final = await webApi.watchJob(created.job_id, (snapshot) => {
+      if (!webApi.isTerminal(snapshot.state)) {
+        const jobPct = snapshot.progress_pct ?? 0;
+        setFileStatus(file.id, "converting", 50 + Math.round(jobPct / 2), undefined, undefined, null, null);
+      }
+    });
+
+    switch (final.state) {
+      case "completed":
+        setFileStatus(file.id, "completed", 100, undefined, webApi.jobDownloadUrl(final.job_id), null, null);
+        return "succeeded";
+      case "cancelled":
+        setFileStatus(file.id, "pending", 0, undefined, undefined, null, null);
+        return "cancelled";
+      default:
+        setFileStatus(file.id, "error", 0, final.error?.code ?? "PROCESS_FAILED", undefined, null, null);
+        return "failed";
+    }
+  } catch (error) {
+    const code = error instanceof webApi.WebApiError ? error.code : "PROCESS_FAILED";
+    if (code === "CANCELLED" || entry.cancelled) {
+      setFileStatus(file.id, "pending", 0, undefined, undefined, null, null);
+      return "cancelled";
+    }
+    setFileStatus(file.id, "error", 0, code, undefined, null, null);
+    return "failed";
+  } finally {
+    webInFlight.delete(file.id);
+  }
+}
+
+function requestWebCancel(fileId: string) {
+  const entry = webInFlight.get(fileId);
+  if (entry) {
+    entry.cancelled = true;
+    entry.abort.abort();
+    if (entry.jobId) void webApi.cancelJob(entry.jobId).catch(() => {});
+    return;
+  }
+  // Not started yet (still waiting its turn in the batch): drop it so the
+  // batch loop skips it.
+  const { activeConversions } = useStore.getState();
+  if (activeConversions.has(fileId)) {
+    const updated = new Set(activeConversions);
+    updated.delete(fileId);
+    useStore.setState({ activeConversions: updated });
+  }
+}
+
+/// Removing a file in the web runtime also releases everything tied to it:
+/// any running conversion is cancelled, its server job (and output) is
+/// deleted, and the browser-side copy/preview is dropped.
+function releaseWebFile(file: ConversionFile) {
+  const entry = webInFlight.get(file.id);
+  if (entry) {
+    entry.cancelled = true;
+    entry.abort.abort();
+  }
+  const jobId = entry?.jobId ?? file.webJobId;
+  if (jobId) void webApi.deleteJob(jobId).catch(() => {});
+  webApi.forgetLocalFile(file.path);
+}
+
 // ── Theme resolution ─────────────────────────────────────────────────────
 // `themePreference` ("dark" | "light" | "system") is what the user picks
 // in Settings and what gets persisted. `settings.theme` is always the
@@ -1176,10 +1348,13 @@ function applyResolvedThemeToDocument(theme: "dark" | "light") {
   }
 }
 
-// Initialize output directory
-invoke<string>("get_default_output_dir").then((dir) => {
-  useStore.getState().updateSettings({ outputDirectory: dir });
-});
+// Initialize output directory (desktop only - the web runtime has no output
+// folder; results are downloaded through the browser).
+if (!IS_WEB_RUNTIME) {
+  invoke<string>("get_default_output_dir").then((dir) => {
+    useStore.getState().updateSettings({ outputDirectory: dir });
+  });
+}
 
 // Load saved theme preference. `localconvert_theme` (singular resolved
 // value) is the old storage key from before "system" support existed;

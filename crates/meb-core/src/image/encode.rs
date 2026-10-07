@@ -59,8 +59,16 @@ pub fn encode_to_bytes(
             let quality = options.quality.unwrap_or(85).clamp(1, 100);
             let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cursor, quality);
             encoder
-                .write_image(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
-                .map_err(|e| ImageNativeError::new(ImageNativeErrorKind::EncodeFailed).with_detail(e.to_string()))?;
+                .write_image(
+                    rgb.as_raw(),
+                    rgb.width(),
+                    rgb.height(),
+                    image::ExtendedColorType::Rgb8,
+                )
+                .map_err(|e| {
+                    ImageNativeError::new(ImageNativeErrorKind::EncodeFailed)
+                        .with_detail(e.to_string())
+                })?;
         }
         NativeImageFormat::Png => {
             let compression = match options.png_compression_level.unwrap_or(6) {
@@ -73,8 +81,9 @@ pub fn encode_to_bytes(
                 compression,
                 image::codecs::png::FilterType::Adaptive,
             );
-            img.write_with_encoder(encoder)
-                .map_err(|e| ImageNativeError::new(ImageNativeErrorKind::EncodeFailed).with_detail(e.to_string()))?;
+            img.write_with_encoder(encoder).map_err(|e| {
+                ImageNativeError::new(ImageNativeErrorKind::EncodeFailed).with_detail(e.to_string())
+            })?;
         }
         NativeImageFormat::WebP => {
             // Pure-Rust `image-webp` only implements lossless WebP encoding
@@ -82,26 +91,44 @@ pub fn encode_to_bytes(
             // the UI/API for forward compatibility but has no effect here -
             // documented in the Step 2 final report.
             let encoder = image::codecs::webp::WebPEncoder::new_lossless(&mut cursor);
-            img.write_with_encoder(encoder)
-                .map_err(|e| ImageNativeError::new(ImageNativeErrorKind::EncodeFailed).with_detail(e.to_string()))?;
+            img.write_with_encoder(encoder).map_err(|e| {
+                ImageNativeError::new(ImageNativeErrorKind::EncodeFailed).with_detail(e.to_string())
+            })?;
         }
         NativeImageFormat::Bmp => {
             let rgb = flatten_to_white(img);
             let encoder = image::codecs::bmp::BmpEncoder::new(&mut cursor);
             encoder
-                .write_image(rgb.as_raw(), rgb.width(), rgb.height(), image::ExtendedColorType::Rgb8)
-                .map_err(|e| ImageNativeError::new(ImageNativeErrorKind::EncodeFailed).with_detail(e.to_string()))?;
+                .write_image(
+                    rgb.as_raw(),
+                    rgb.width(),
+                    rgb.height(),
+                    image::ExtendedColorType::Rgb8,
+                )
+                .map_err(|e| {
+                    ImageNativeError::new(ImageNativeErrorKind::EncodeFailed)
+                        .with_detail(e.to_string())
+                })?;
         }
         NativeImageFormat::Gif => {
             let rgba = img.to_rgba8();
             image::codecs::gif::GifEncoder::new(&mut cursor)
-                .write_image(rgba.as_raw(), rgba.width(), rgba.height(), image::ExtendedColorType::Rgba8)
-                .map_err(|e| ImageNativeError::new(ImageNativeErrorKind::EncodeFailed).with_detail(e.to_string()))?;
+                .write_image(
+                    rgba.as_raw(),
+                    rgba.width(),
+                    rgba.height(),
+                    image::ExtendedColorType::Rgba8,
+                )
+                .map_err(|e| {
+                    ImageNativeError::new(ImageNativeErrorKind::EncodeFailed)
+                        .with_detail(e.to_string())
+                })?;
         }
         NativeImageFormat::Tiff => {
             let encoder = image::codecs::tiff::TiffEncoder::new(&mut cursor);
-            img.write_with_encoder(encoder)
-                .map_err(|e| ImageNativeError::new(ImageNativeErrorKind::EncodeFailed).with_detail(e.to_string()))?;
+            img.write_with_encoder(encoder).map_err(|e| {
+                ImageNativeError::new(ImageNativeErrorKind::EncodeFailed).with_detail(e.to_string())
+            })?;
         }
     }
 

@@ -21,6 +21,9 @@ pub enum ImageNativeErrorKind {
     /// conversion, this rejects the file up front (Step 3 fix pass, item 5 -
     /// prefer a loud, structured error over silent data loss).
     MultiFrameUnsupported,
+    /// A caller-requested cooperative cancellation (see
+    /// `super::PipelineHooks`). Never produced by plain `convert_file`.
+    Cancelled,
 }
 
 impl ImageNativeErrorKind {
@@ -32,6 +35,7 @@ impl ImageNativeErrorKind {
             ImageNativeErrorKind::EncodeFailed => "IMAGE_ENCODE_FAILED",
             ImageNativeErrorKind::InvalidDimensions => "INVALID_DIMENSIONS",
             ImageNativeErrorKind::MultiFrameUnsupported => "IMAGE_MULTI_FRAME_UNSUPPORTED",
+            ImageNativeErrorKind::Cancelled => "CANCELLED",
         }
     }
 
@@ -45,6 +49,7 @@ impl ImageNativeErrorKind {
             ImageNativeErrorKind::MultiFrameUnsupported => {
                 "Animated GIF and multi-page TIFF are not supported yet - only single-frame images convert."
             }
+            ImageNativeErrorKind::Cancelled => "The operation was cancelled.",
         }
     }
 }
@@ -122,7 +127,10 @@ mod tests {
             ImageNativeError::new(ImageNativeErrorKind::UnsupportedFormat).code(),
             "UNSUPPORTED_IMAGE_FORMAT"
         );
-        assert_eq!(ImageNativeError::new(ImageNativeErrorKind::TooLarge).code(), "IMAGE_TOO_LARGE");
+        assert_eq!(
+            ImageNativeError::new(ImageNativeErrorKind::TooLarge).code(),
+            "IMAGE_TOO_LARGE"
+        );
         assert_eq!(
             ImageNativeError::new(ImageNativeErrorKind::DecodeFailed).code(),
             "IMAGE_DECODE_FAILED"

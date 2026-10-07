@@ -8,6 +8,9 @@ import { useStore } from "../store/useStore";
 import type { FileInfo } from "../store/useStore";
 import { CATEGORIES } from "../types/formats";
 import { t } from "../locales";
+import { IS_WEB_RUNTIME } from "../platform/runtime";
+import { addBrowserFiles, pickAndAddBrowserFiles } from "../platform/webFiles";
+import { filesFromDataTransfer } from "../api/web";
 
 const categoryIcons: Record<string, React.ComponentType<{ className?: string }>> = {
   all: Upload,
@@ -50,8 +53,10 @@ export function FileDropZone() {
   const categoryName = t(`nav.${activeCategory}` as const) || categoryData?.name || t("nav.all");
   const categoryFormats = "formats" in categoryData ? (categoryData.formats as string[]) : null;
 
-  // Listen for Tauri native drag events for visual feedback
+  // Listen for Tauri native drag events for visual feedback (desktop only;
+  // the web runtime uses the DOM drag events below).
   useEffect(() => {
+    if (IS_WEB_RUNTIME) return;
     const unlistenEnter = listen("tauri://drag-enter", () => {
       setIsDragging(true);
     });
@@ -102,20 +107,34 @@ export function FileDropZone() {
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (IS_WEB_RUNTIME) setIsDragging(true);
   }, []);
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    // Ignore leave events fired when moving between child elements.
+    if (IS_WEB_RUNTIME && !e.currentTarget.contains(e.relatedTarget as Node | null)) {
+      setIsDragging(false);
+    }
   }, []);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    // Actual file handling is done via Tauri events in App.tsx
+    // Desktop: actual file handling is done via Tauri events in App.tsx.
+    // Web: the browser hands us File objects directly.
+    if (IS_WEB_RUNTIME) {
+      setIsDragging(false);
+      addBrowserFiles(filesFromDataTransfer(e.dataTransfer));
+    }
   }, []);
 
   const handleBrowse = useCallback(async () => {
+    if (IS_WEB_RUNTIME) {
+      await pickAndAddBrowserFiles();
+      return;
+    }
     try {
       const selected = await open({
         multiple: true,
@@ -268,7 +287,8 @@ export function FileDropZone() {
                   <Upload className="w-5 h-5" />
                   {t("workflow.browse")} {activeCategory === "all" ? t("workflow.files") : categoryName}
                 </motion.button>
-                <motion.button
+                {/* Folder selection needs a native dialog; not offered in the web runtime. */}
+                {!IS_WEB_RUNTIME && <motion.button
                   className={`px-6 py-4 rounded-xl font-semibold text-lg flex items-center gap-3 transition-colors glass-panel border ${
                     isDark
                       ? "hover:bg-dark-800 text-dark-200"
@@ -280,7 +300,7 @@ export function FileDropZone() {
                 >
                   <FolderOpen className="w-5 h-5" />
                   {t("workflow.selectFolder")}
-                </motion.button>
+                </motion.button>}
               </div>
             </motion.div>
           )}

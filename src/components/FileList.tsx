@@ -8,6 +8,8 @@ import { useStore } from "../store/useStore";
 import { FileCard } from "./FileCard";
 import type { FileInfo, ConversionFile } from "../store/useStore";
 import { t } from "../locales";
+import { IS_WEB_RUNTIME } from "../platform/runtime";
+import { pickAndAddBrowserFiles } from "../platform/webFiles";
 
 // Step 3 perf pass (section D): takes no props - React.memo means FileList
 // only re-renders from its own narrowed store subscription, not merely
@@ -69,6 +71,10 @@ export const FileList = memo(function FileList() {
     filteredFiles.every((f) => selectedFiles.includes(f.id));
 
   const handleAddMore = useCallback(async () => {
+    if (IS_WEB_RUNTIME) {
+      await pickAndAddBrowserFiles();
+      return;
+    }
     try {
       const selected = await open({
         multiple: true,

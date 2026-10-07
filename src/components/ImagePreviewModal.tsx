@@ -5,6 +5,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { useStore } from "../store/useStore";
 import { formatFileSize } from "../types/formats";
 import { t } from "../locales";
+import { IS_WEB_RUNTIME } from "../platform/runtime";
+import { getLocalPreviewUrl } from "../api/web";
 
 export function ImagePreviewModal() {
   const { files, settings, previewImageId, setPreviewImageId } = useStore();
@@ -42,6 +44,11 @@ export function ImagePreviewModal() {
   // Load full-size image when preview opens or changes
   useEffect(() => {
     if (currentFile && !fullPreviewUrl && !loading) {
+      // Web runtime: the browser already holds the original file.
+      if (IS_WEB_RUNTIME) {
+        setFullPreviewUrl(getLocalPreviewUrl(currentFile.path));
+        return;
+      }
       setLoading(true);
       invoke<string>("get_image_preview", { path: currentFile.path, maxSize: 1920 })
         .then((url) => {

@@ -3,6 +3,7 @@ import { Settings, ShieldCheck, Wrench, Minus, Square, X } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useStore } from "../store/useStore";
 import { t } from "../locales";
+import { IS_WEB_RUNTIME } from "../platform/runtime";
 // A 128x128 pre-downscaled copy of the master src/assets/meb-donustur-logo.png
 // (the full 1254x1254 source, kept as-is for icon regeneration) - the header
 // only ever renders this at 32px, so shipping the full-resolution master here
@@ -36,16 +37,18 @@ const iconButtonClass = (isDark: boolean) =>
 // that App.tsx's `files` subscription produces during conversion (manual
 // test finding "no major degradation" during file activity, TEST B).
 export const Header = memo(function Header({ onSettingsClick, onPrivacyClick, onToolsClick }: HeaderProps) {
-  const appWindow = getCurrentWindow();
+  // Web runtime: there is no native window to control - the browser owns
+  // minimize/maximize/close, so the custom window chrome is not rendered.
+  const appWindow = IS_WEB_RUNTIME ? null : getCurrentWindow();
   // Step 3 perf pass (section D): the header is always mounted and rendered
   // above everything else, so subscribing to the whole store here meant
   // every unrelated state change re-rendered it too. Only `settings.theme`
   // is actually read.
   const isDark = useStore((s) => s.settings.theme) === "dark";
 
-  const handleMinimize = () => appWindow.minimize();
-  const handleMaximize = () => appWindow.toggleMaximize();
-  const handleClose = () => appWindow.close();
+  const handleMinimize = () => appWindow?.minimize();
+  const handleMaximize = () => appWindow?.toggleMaximize();
+  const handleClose = () => appWindow?.close();
 
   return (
     <header className={`relative z-50 h-12 flex items-center justify-between select-none transition-shadow duration-300 rounded-xl glass-panel ${
@@ -98,6 +101,7 @@ export const Header = memo(function Header({ onSettingsClick, onPrivacyClick, on
           </button>
         </div>
 
+        {appWindow && (<>
         {/* Separator */}
         <div className={`w-px h-5 mx-1 ${isDark ? "bg-dark-700/50" : "bg-dark-200/50"}`} />
 
@@ -131,6 +135,7 @@ export const Header = memo(function Header({ onSettingsClick, onPrivacyClick, on
             <X className="w-4 h-4" />
           </button>
         </div>
+        </>)}
       </div>
     </header>
   );

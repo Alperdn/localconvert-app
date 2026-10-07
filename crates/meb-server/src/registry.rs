@@ -16,7 +16,7 @@ use crate::error::ApiError;
 use crate::ids::{FileId, JobId};
 use crate::jobs::{Job, JobState};
 use crate::session::Owner;
-use meb_core::image::NativeImageFormat;
+use meb_core::format::SourceFormat;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
@@ -27,10 +27,14 @@ pub struct FileRecord {
     pub id: FileId,
     owner: Owner,
     pub display_name: String,
-    pub format: NativeImageFormat,
+    /// The format the CONTENT proved to be at upload, never the claim its
+    /// name made.
+    pub format: SourceFormat,
     pub size: u64,
-    pub width: u32,
-    pub height: u32,
+    /// Pixel dimensions, for an image. `None` for a PDF or an Office
+    /// document, which have no single meaningful one.
+    pub width: Option<u32>,
+    pub height: Option<u32>,
     pub created_at_ms: u64,
     created: Instant,
 }
@@ -41,8 +45,8 @@ pub struct FileView {
     pub display_name: String,
     pub size: u64,
     pub detected_format: &'static str,
-    pub width: u32,
-    pub height: u32,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
     pub created_at_ms: u64,
 }
 
@@ -51,10 +55,10 @@ impl FileRecord {
         id: FileId,
         owner: Owner,
         display_name: String,
-        format: NativeImageFormat,
+        format: SourceFormat,
         size: u64,
-        width: u32,
-        height: u32,
+        width: Option<u32>,
+        height: Option<u32>,
     ) -> Self {
         FileRecord {
             id,

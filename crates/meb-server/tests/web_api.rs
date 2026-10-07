@@ -68,12 +68,25 @@ impl TestServer {
         Self::with(|_| {}, Arc::new(NativeImageRunner))
     }
 
+    /// Wired exactly as the real server is (`RunnerRegistry::production`),
+    /// so a kind with no engine behaves here as it does in production.
+    fn production() -> Self {
+        Self::built(|_| {}, None)
+    }
+
     fn with(tune: impl FnOnce(&mut Config), runner: Arc<dyn ConversionRunner>) -> Self {
+        Self::built(tune, Some(runner))
+    }
+
+    fn built(tune: impl FnOnce(&mut Config), runner: Option<Arc<dyn ConversionRunner>>) -> Self {
         let root =
             std::env::temp_dir().join(format!("meb_web_test_{}", uuid::Uuid::new_v4().simple()));
         let mut config = Config::development(root.clone());
         tune(&mut config);
-        let app = App::with_runner(config, runner).unwrap();
+        let app = match runner {
+            Some(runner) => App::with_runner(config, runner).unwrap(),
+            None => App::new(config).unwrap(),
+        };
         let router = app.router();
         let root = app.data_root().to_path_buf();
         TestServer { app, router, root }
@@ -308,6 +321,45 @@ fn percent_encode(s: &str) -> String {
         .collect()
 }
 
+/// A structurally valid, minimal PDF: the header and trailer the upload
+/// probe checks for. Not a renderable document - no engine opens it here.
+fn pdf_bytes() -> Vec<u8> {
+    b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n"
+        .to_vec()
+}
+
+/// A ZIP holding the given members, all stored uncompressed.
+fn zip_bytes(members: &[(&str, &[u8])]) -> Vec<u8> {
+    use std::io::Write;
+    let mut buffer = std::io::Cursor::new(Vec::new());
+    {
+        let mut writer = zip::ZipWriter::new(&mut buffer);
+        for (name, contents) in members {
+            let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(contents).unwrap();
+        }
+        writer.finish().unwrap();
+    }
+    buffer.into_inner()
+}
+
+/// Minimal OOXML files, identified by the part that defines each one.
+fn docx_bytes() -> Vec<u8> {
+    zip_bytes(&[
+        ("[Content_Types].xml", b"<Types/>"),
+        ("word/document.xml", b"<document/>"),
+    ])
+}
+
+fn xlsx_bytes() -> Vec<u8> {
+    zip_bytes(&[
+        ("[Content_Types].xml", b"<Types/>"),
+        ("xl/workbook.xml", b"<workbook/>"),
+    ])
+}
+
 /// Uploads a JPEG and returns its file id.
 async fn upload_jpeg(client: &mut Client) -> String {
     let r = client.upload("foto.jpg", jpeg_bytes(32, 24)).await;
@@ -364,11 +416,50 @@ impl ConversionRunner for BlockingRunner {
     }
 }
 
+/// Stands in for the PDF engine: checks it was handed the job's inputs in
+/// order, then writes a minimal valid PDF where the worker expects it.
+struct MergeRunner {
+    expected_inputs: usize,
+}
+
+impl ConversionRunner for MergeRunner {
+    fn run(&self, request: &RunRequest<'_>, control: &JobControl<'_>) -> Result<(), RunError> {
+        assert_eq!(
+            request.inputs.len(),
+            self.expected_inputs,
+            "worker staged the wrong number of inputs"
+        );
+        for input in request.inputs {
+            assert!(input.is_file(), "input was not staged: {input:?}");
+        }
+        control.report_progress(50);
+        let mut merged = Vec::new();
+        for input in request.inputs {
+            merged.extend_from_slice(&std::fs::read(input).unwrap());
+        }
+        // The concatenation above is not a real merge; what matters here is
+        // that the output is a well-formed PDF the worker will accept.
+        let output = b"%PDF-1.7\n% merged\ntrailer\n%%EOF\n".to_vec();
+        std::fs::write(request.output, output).map_err(|e| RunError::Failed {
+            code: "INTERNAL_ERROR",
+            detail: e.to_string(),
+        })?;
+        control.report_progress(100);
+        Ok(())
+    }
+}
+
 struct PanickingRunner;
 
 impl ConversionRunner for PanickingRunner {
     fn run(&self, request: &RunRequest<'_>, control: &JobControl<'_>) -> Result<(), RunError> {
-        if request.options.quality == Some(13) {
+        // Reads the job's options through its spec, the way a real engine
+        // does, so the panic is triggered by one specific request.
+        let quality = request
+            .spec
+            .image_convert()
+            .and_then(|spec| spec.options.quality);
+        if quality == Some(13) {
             panic!("simulated engine bug");
         }
         NativeImageRunner.run(request, control)
@@ -401,6 +492,200 @@ async fn upload_over_the_size_cap_is_rejected_before_and_during_streaming() {
 
 // ── 2. malformed uploads ────────────────────────────────────────────────
 
+/// A non-image kind travels the whole generalized pipeline: several inputs
+/// staged into one workspace, an engine that is not the image pipeline, an
+/// output validated as a PDF (not as an image), and a download named and
+/// typed by the job's spec rather than by anything the client sent.
+#[tokio::test]
+async fn a_multi_input_pdf_job_runs_through_the_generalized_pipeline() {
+    let server = TestServer::with(|_| {}, Arc::new(MergeRunner { expected_inputs: 3 }));
+    let mut c = server.client();
+
+    let mut ids = Vec::new();
+    for name in ["bir.pdf", "iki.pdf", "uc.pdf"] {
+        let r = c.upload(name, pdf_bytes()).await;
+        assert_eq!(
+            r.status,
+            StatusCode::CREATED,
+            "{}",
+            String::from_utf8_lossy(&r.body)
+        );
+        ids.push(r.json()["file_id"].as_str().unwrap().to_string());
+    }
+
+    let created = c
+        .post_json(
+            "/api/v1/jobs",
+            json!({ "kind": "pdf_merge", "file_ids": ids }),
+        )
+        .await;
+    assert_eq!(
+        created.status,
+        StatusCode::ACCEPTED,
+        "{}",
+        String::from_utf8_lossy(&created.body)
+    );
+    let snapshot = created.json();
+    assert_eq!(snapshot["kind"], "pdf_merge");
+    assert_eq!(snapshot["output_format"], "pdf");
+    // Every input is reported, and `file_id` stays the first for clients
+    // that predate multi-input jobs.
+    assert_eq!(snapshot["file_ids"].as_array().unwrap().len(), 3);
+    assert_eq!(snapshot["file_id"], ids[0].clone());
+
+    let job_id = snapshot["job_id"].as_str().unwrap().to_string();
+    let terminal = c.wait_terminal(&job_id).await;
+    assert_eq!(terminal["state"], "completed", "{terminal}");
+    assert_eq!(terminal["result"]["content_type"], "application/pdf");
+    assert_eq!(
+        terminal["result"]["output_name"], "bir_birlestirildi.pdf",
+        "{terminal}"
+    );
+
+    let download = c.get(&format!("/api/v1/jobs/{job_id}/download")).await;
+    assert_eq!(download.status, StatusCode::OK);
+    assert_eq!(download.headers[header::CONTENT_TYPE], "application/pdf");
+    let disposition = download.headers[header::CONTENT_DISPOSITION]
+        .to_str()
+        .unwrap();
+    assert!(
+        disposition.contains("bir_birlestirildi.pdf"),
+        "{disposition}"
+    );
+    assert!(download.body.starts_with(b"%PDF-"));
+}
+
+/// A kind the API publishes but has no engine for is refused before any
+/// work, workspace or job record exists - it never becomes a failed job.
+#[tokio::test]
+async fn kinds_without_an_engine_are_refused_before_any_work() {
+    let server = TestServer::production();
+    let mut c = server.client();
+    let pdf_id = c.upload("rapor.pdf", pdf_bytes()).await.json()["file_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    for body in [
+        json!({ "kind": "pdf_merge", "file_ids": [pdf_id.clone(), pdf_id.clone()] }),
+        json!({ "kind": "pdf_compress", "file_id": pdf_id.clone() }),
+        json!({ "kind": "pdf_rotate", "file_id": pdf_id.clone(), "options": { "rotation": "90" } }),
+        json!({ "kind": "pdf_ocr", "file_id": pdf_id.clone() }),
+    ] {
+        let r = c.post_json("/api/v1/jobs", body.clone()).await;
+        assert_eq!(
+            (r.status, r.code().as_str()),
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "UNSUPPORTED_CONVERSION"
+            ),
+            "{body}"
+        );
+    }
+
+    // An unknown kind is refused the same way, and neither case leaves a
+    // job behind.
+    let r = c
+        .post_json(
+            "/api/v1/jobs",
+            json!({ "kind": "pdf_encrypt", "file_id": pdf_id }),
+        )
+        .await;
+    assert_eq!(r.code(), "UNSUPPORTED_CONVERSION");
+    assert!(
+        server.job_dirs().is_empty(),
+        "a refused kind left a workspace: {:?}",
+        server.job_dirs()
+    );
+
+    // The image pipeline is in-process, so it is available in production.
+    let jpeg_id = upload_jpeg(&mut c).await;
+    let created = c.create_job(&jpeg_id, "png").await;
+    assert_eq!(created.status, StatusCode::ACCEPTED);
+    assert_eq!(
+        c.wait_terminal(created.json()["job_id"].as_str().unwrap())
+            .await["state"],
+        "completed"
+    );
+}
+
+/// PDFs and Office documents are admitted, and stored as the format their
+/// CONTENT proves them to be. A short prefix cannot tell DOCX from XLSX -
+/// both are ZIPs - so the probe is what decides, and a name that disagrees
+/// with the parts inside is rejected.
+#[tokio::test]
+async fn documents_are_admitted_only_when_their_content_proves_their_type() {
+    let server = TestServer::new();
+    let mut c = server.client();
+
+    let r = c.upload("rapor.pdf", pdf_bytes()).await;
+    assert_eq!(
+        r.status,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    let view = r.json();
+    assert_eq!(view["detected_format"], "pdf");
+    // A document has no single pixel size: the field is present and null
+    // rather than a made-up zero.
+    assert!(view["width"].is_null(), "{view}");
+    assert!(view["height"].is_null(), "{view}");
+
+    let r = c.upload("mektup.docx", docx_bytes()).await;
+    assert_eq!(
+        r.status,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+    assert_eq!(r.json()["detected_format"], "docx");
+
+    // The same ZIP container, but the parts inside say spreadsheet.
+    let r = c.upload("mektup.docx", xlsx_bytes()).await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, "FILE_TYPE_MISMATCH")
+    );
+
+    // An OpenDocument file is identified by its `mimetype` member.
+    let odt = zip_bytes(&[
+        ("mimetype", b"application/vnd.oasis.opendocument.text"),
+        ("content.xml", b"<document/>"),
+    ]);
+    assert_eq!(
+        c.upload("belge.odt", odt).await.json()["detected_format"],
+        "odt"
+    );
+
+    // A ZIP that is not an Office document at all.
+    let r = c
+        .upload("sahte.docx", zip_bytes(&[("notes.txt", b"just a zip")]))
+        .await;
+    assert_eq!(r.code(), "FILE_TYPE_MISMATCH");
+
+    // A PDF truncated before its trailer. The streaming byte counter cannot
+    // catch a client that declared exactly what it sent; the probe does.
+    let mut truncated = pdf_bytes();
+    truncated.truncate(20);
+    let r = c.upload("yarim.pdf", truncated).await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, "FILE_CORRUPT")
+    );
+
+    // An image conversion cannot be asked of a document.
+    let pdf_id = c.upload("ikinci.pdf", pdf_bytes()).await.json()["file_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r = c.create_job(&pdf_id, "png").await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, "UNSUPPORTED_CONVERSION")
+    );
+}
+
 #[tokio::test]
 async fn malformed_uploads_are_rejected_safely_and_leave_nothing_on_disk() {
     let server = TestServer::new();
@@ -418,17 +703,34 @@ async fn malformed_uploads_are_rejected_safely_and_leave_nothing_on_disk() {
         (StatusCode::LENGTH_REQUIRED, "LENGTH_REQUIRED")
     );
 
-    // Not an image at all, despite the .png name and image/png Content-Type.
+    // A real PDF under a .png name. The server admits PDFs, so this is a
+    // recognized container contradicting its name - not an unknown type.
     let r = c
         .upload(
             "rapor.png",
-            b"%PDF-1.7\n this is a pdf, not a png at all".to_vec(),
+            b"%PDF-1.7\n this is a pdf, not a png at all\n%%EOF".to_vec(),
         )
+        .await;
+    assert_eq!(
+        (r.status, r.code().as_str()),
+        (StatusCode::UNPROCESSABLE_ENTITY, "FILE_TYPE_MISMATCH")
+    );
+
+    // Content that is no container this server opens at all.
+    let r = c
+        .upload("notlar.png", b"just some plain text, no magic".to_vec())
         .await;
     assert_eq!(
         (r.status, r.code().as_str()),
         (StatusCode::UNSUPPORTED_MEDIA_TYPE, "UNSUPPORTED_FILE_TYPE")
     );
+
+    // A legacy binary .doc (OLE container) renamed to .docx: not admitted,
+    // and recognized as unsupported rather than mistaken for OOXML.
+    let mut ole = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1".to_vec();
+    ole.extend_from_slice(&[0u8; 64]);
+    let r = c.upload("eski.docx", ole).await;
+    assert_eq!(r.code(), "UNSUPPORTED_FILE_TYPE");
 
     // Real JPEG content under a .png name.
     let r = c.upload("disguised.png", jpeg_bytes(8, 8)).await;
@@ -685,21 +987,36 @@ async fn jpeg_to_png_conversion_end_to_end() {
     let server = TestServer::new();
     let mut c = server.client();
 
-    let caps = c.get("/api/v1/capabilities").await.json();
-    let image_cap = caps["capabilities"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|x| x["id"] == "image_conversion")
-        .unwrap();
-    assert_eq!(image_cap["state"], "AVAILABLE");
-    let office = caps["capabilities"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|x| x["id"] == "office_to_pdf")
-        .unwrap();
-    assert_eq!(office["state"], "NOT_IMPLEMENTED");
+    // Capabilities are derived from the engines actually wired in, so this
+    // is asked of a production-wired server: the test harness gives every
+    // kind the same injected runner, which would make them all look
+    // available.
+    {
+        let production = TestServer::production();
+        let mut pc = production.client();
+        let caps = pc.get("/api/v1/capabilities").await.json();
+        let state_of = |id: &str| {
+            caps["capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|x| x["id"] == id)
+                .unwrap_or_else(|| panic!("{id} is not reported"))["state"]
+                .clone()
+        };
+        assert_eq!(state_of("image_conversion"), "AVAILABLE");
+        assert_eq!(state_of("image_resize"), "AVAILABLE");
+        // No document engine is wired in yet, and nothing claims otherwise.
+        assert_eq!(state_of("office_to_pdf"), "NOT_IMPLEMENTED");
+        assert_eq!(state_of("pdf_structural_ops"), "NOT_IMPLEMENTED");
+        assert_eq!(state_of("ocr"), "NOT_IMPLEMENTED");
+        // The kinds a client may post match exactly what is executable.
+        assert_eq!(caps["kinds"].as_array().unwrap(), &[json!("convert")]);
+        assert!(caps["formats"]["office"]["outputs"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
 
     let up = c.upload("Öğrenci Fotoğrafı.jpg", jpeg_bytes(40, 30)).await;
     assert_eq!(up.status, StatusCode::CREATED);

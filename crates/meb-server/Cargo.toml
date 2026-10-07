@@ -40,3 +40,5 @@ tower = { version = "0.5", features = ["util"] }
 futures-util = "0.3"
 http-body-util = "0.1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif"] }
+# Builds the minimal OOXML/OpenDocument fixtures the upload tests use.
+zip = { version = "2", default-features = false, features = ["deflate"] }

@@ -34,7 +34,7 @@ pub const MAX_DECODED_PIXELS: u64 = 40_000_000;
 /// e.g. 4 billion is nonsensical well before that check runs).
 pub const MAX_DIMENSION: u32 = 20_000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NativeImageFormat {
     Jpeg,
     Png,

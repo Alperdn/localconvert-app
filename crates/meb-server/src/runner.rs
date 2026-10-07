@@ -1,34 +1,61 @@
 //! The engine boundary.
 //!
 //! The job worker never knows how a conversion is performed: it hands a
-//! `ConversionRunner` an input path and an output path - both inside the
-//! job's server-owned workspace - plus a `JobControl` (cancel flag +
-//! progress sink), and validates whatever comes back.
+//! `ConversionRunner` the job's input paths and the output path - all inside
+//! the job's server-owned workspace - plus the job's `JobSpec` (what to do)
+//! and a `JobControl` (cancel flag + progress sink), and validates whatever
+//! comes back.
 //!
-//! - In-process engines (the native image pipeline today) implement this
+//! One runner per `JobKind`, wired in a `RunnerRegistry`:
+//!
+//! - In-process engines (the native image pipeline today) implement the
 //!   trait directly by calling `meb_core`.
-//! - External engines (LibreOffice, FFmpeg/ffprobe, whisper.cpp) will
+//! - External engines (Ghostscript for PDF operations, LibreOffice for
+//!   Office conversion, Tesseract for OCR, FFmpeg, whisper.cpp) will
 //!   implement it on top of the unified process runner described in
 //!   docs/WEB_ARCHITECTURE_PROPOSAL.md §E (allowlisted executable, argument
 //!   array, controlled env/cwd, timeout, process-tree kill). They must NOT
 //!   use the legacy `src-tauri/src/converter.rs` launcher.
 //!
+//! A kind with no runner registered is not reachable: the create-job handler
+//! rejects it with `UNSUPPORTED_CONVERSION` before a job exists. That is how
+//! a kind whose engine is missing (or not implemented yet) stays off the API,
+//! rather than failing every job it accepts.
+//!
 //! The web layer contains no image-processing code: `NativeImageRunner` is
 //! a thin adapter over `meb_core::image::convert_file_with_hooks`, which is
 //! the same pipeline (and the same limits) the desktop app uses.
 
-use crate::jobs::ConvertOptions;
-use meb_core::image::{
-    self, NativeConvertOptions, NativeImageFormat, PipelineHooks, PipelineStage,
-};
-use std::path::Path;
+use crate::spec::{JobKind, JobSpec};
+use meb_core::image::{self, NativeConvertOptions, PipelineHooks, PipelineStage};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 pub struct RunRequest<'a> {
-    pub input: &'a Path,
+    /// The job's inputs, staged in its own `in/` directory, in the order the
+    /// request named them. Single-input kinds get exactly one; multi-input
+    /// kinds (PDF merge) get the whole list.
+    pub inputs: &'a [PathBuf],
+    /// Where the engine must write its single output. Nothing else in the
+    /// workspace is published.
     pub output: &'a Path,
-    pub target: NativeImageFormat,
-    pub options: &'a ConvertOptions,
+    /// What to do - already validated; a runner may trust it.
+    pub spec: &'a JobSpec,
+}
+
+impl RunRequest<'_> {
+    /// The first input. Every kind has at least one, so this is infallible
+    /// for a request the worker built.
+    pub fn input(&self) -> &Path {
+        self.inputs
+            .first()
+            .map(PathBuf::as_path)
+            // Unreachable for a worker-built request; a runner must not have
+            // to handle it, and a bogus path fails the engine honestly.
+            .unwrap_or_else(|| Path::new(""))
+    }
 }
 
 /// What an engine may observe/report while running.
@@ -59,8 +86,65 @@ pub enum RunError {
     },
 }
 
+impl RunError {
+    /// For a runner handed a spec of a kind it does not implement - a wiring
+    /// mistake in the registry, not a client error.
+    pub fn wrong_kind(runner: &str) -> RunError {
+        RunError::Failed {
+            code: "INTERNAL_ERROR",
+            detail: format!("{runner} was given a job kind it does not handle"),
+        }
+    }
+}
+
 pub trait ConversionRunner: Send + Sync + 'static {
     fn run(&self, request: &RunRequest<'_>, control: &JobControl<'_>) -> Result<(), RunError>;
+}
+
+/// Which runner executes which `JobKind`.
+///
+/// Built once at startup. Lookup is the only way the worker obtains a
+/// runner, so the set of kinds this server will actually execute is exactly
+/// the set of keys here.
+#[derive(Clone, Default)]
+pub struct RunnerRegistry {
+    by_kind: HashMap<JobKind, Arc<dyn ConversionRunner>>,
+}
+
+impl RunnerRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The engines this server ships with. Kinds backed by an external tool
+    /// are added here as each one is migrated onto the process runner.
+    pub fn production() -> Self {
+        Self::new().with(JobKind::ImageConvert, Arc::new(NativeImageRunner))
+    }
+
+    pub fn with(mut self, kind: JobKind, runner: Arc<dyn ConversionRunner>) -> Self {
+        self.by_kind.insert(kind, runner);
+        self
+    }
+
+    /// One runner for every kind. A TEST seam (runners that block, panic or
+    /// fail, to exercise the job lifecycle) - production wiring names the
+    /// kind each engine actually handles.
+    pub fn uniform(runner: Arc<dyn ConversionRunner>) -> Self {
+        JobKind::ALL
+            .into_iter()
+            .fold(Self::new(), |registry, kind| {
+                registry.with(kind, runner.clone())
+            })
+    }
+
+    pub fn for_kind(&self, kind: JobKind) -> Option<Arc<dyn ConversionRunner>> {
+        self.by_kind.get(&kind).cloned()
+    }
+
+    pub fn supports(&self, kind: JobKind) -> bool {
+        self.by_kind.contains_key(&kind)
+    }
 }
 
 /// Adapter over the shared native image engine.
@@ -68,10 +152,13 @@ pub struct NativeImageRunner;
 
 impl ConversionRunner for NativeImageRunner {
     fn run(&self, request: &RunRequest<'_>, control: &JobControl<'_>) -> Result<(), RunError> {
+        let Some(spec) = request.spec.image_convert() else {
+            return Err(RunError::wrong_kind("NativeImageRunner"));
+        };
         let options = NativeConvertOptions {
-            width: request.options.width,
-            height: request.options.height,
-            quality: request.options.quality,
+            width: spec.options.width,
+            height: spec.options.height,
+            quality: spec.options.quality,
             png_compression_level: None,
         };
         let is_cancelled = || control.is_cancelled();
@@ -89,9 +176,9 @@ impl ConversionRunner for NativeImageRunner {
             on_stage: &on_stage,
         };
         image::convert_file_with_hooks(
-            request.input,
+            request.input(),
             request.output,
-            request.target,
+            spec.target,
             &options,
             &hooks,
         )
@@ -105,5 +192,68 @@ impl ConversionRunner for NativeImageRunner {
                 }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Noop;
+    impl ConversionRunner for Noop {
+        fn run(&self, _: &RunRequest<'_>, _: &JobControl<'_>) -> Result<(), RunError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn an_unregistered_kind_has_no_runner() {
+        let empty = RunnerRegistry::new();
+        for kind in JobKind::ALL {
+            assert!(!empty.supports(kind));
+            assert!(empty.for_kind(kind).is_none());
+        }
+    }
+
+    /// Kinds whose engine is not wired into the web server yet. They are
+    /// part of the API's vocabulary - a client gets a clear
+    /// `UNSUPPORTED_CONVERSION` rather than a parse error - but nothing
+    /// pretends to execute them.
+    ///
+    /// Moving a kind off this list means registering its runner in
+    /// `production()` in the same change, which is what this test enforces
+    /// in both directions.
+    const AWAITING_AN_ENGINE: [JobKind; 7] = [
+        JobKind::PdfMerge,
+        JobKind::PdfSplit,
+        JobKind::PdfCompress,
+        JobKind::PdfRotate,
+        JobKind::PdfWatermark,
+        JobKind::PdfOcr,
+        JobKind::OfficeConvert,
+    ];
+
+    #[test]
+    fn production_wires_exactly_the_kinds_it_can_execute() {
+        let registry = RunnerRegistry::production();
+        for kind in JobKind::ALL {
+            let awaiting = AWAITING_AN_ENGINE.contains(&kind);
+            assert_eq!(
+                registry.supports(kind),
+                !awaiting,
+                "kind {} is {} a runner but {} listed as awaiting an engine",
+                kind.wire(),
+                if awaiting { "wired to" } else { "missing" },
+                if awaiting { "also" } else { "not" }
+            );
+        }
+        // The native image pipeline is in-process, so it is always wired.
+        assert!(registry.supports(JobKind::ImageConvert));
+    }
+
+    #[test]
+    fn uniform_covers_every_kind() {
+        let registry = RunnerRegistry::uniform(Arc::new(Noop));
+        assert!(JobKind::ALL.into_iter().all(|k| registry.supports(k)));
     }
 }

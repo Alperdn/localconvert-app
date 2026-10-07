@@ -20,6 +20,10 @@ path = "src/lib.rs"
 # Same versions/features as src-tauri so both builds resolve identical code.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp", "gif", "tiff"] }  # MIT/Apache-2.0
 tiff = "0.11"  # MIT/Apache-2.0 - multi-page TIFF detection only
+# Reads the central directory of an OOXML/OpenDocument file to establish
+# which Office format it really is (see `document::probe_office`). Same
+# version/features as src-tauri so both builds resolve identical code.
+zip = { version = "2", default-features = false, features = ["deflate"] }  # MIT/Apache-2.0
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]

@@ -1,5 +1,10 @@
-//! Job model: state machine, snapshot (the single source of truth a client
-//! sees - via `GET /jobs/:id` or SSE) and the create-job request.
+//! Job model: state machine and snapshot (the single source of truth a
+//! client sees - via `GET /jobs/:id` or SSE).
+//!
+//! This module is engine-agnostic: what a job DOES lives in its `JobSpec`
+//! (see `spec`), and every kind-specific decision here - the output's
+//! extension, MIME type and download name - is asked of that spec. Adding a
+//! conversion kind therefore does not touch this file.
 //!
 //! ```text
 //! queued ──► running ──► completed
@@ -11,9 +16,9 @@
 
 use crate::ids::{FileId, JobId};
 use crate::session::Owner;
+use crate::spec::{JobKind, JobSpec};
 use crate::storage::JobPaths;
-use meb_core::image::NativeImageFormat;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -57,7 +62,10 @@ pub struct JobResultInfo {
 pub struct JobSnapshot {
     pub job_id: String,
     pub kind: &'static str,
+    /// The job's first input. Kept for clients that predate multi-input
+    /// jobs; `file_ids` is the complete list.
     pub file_id: String,
+    pub file_ids: Vec<String>,
     pub output_format: &'static str,
     pub state: JobState,
     /// Real, stage-based progress only; `null` = not yet known.
@@ -68,26 +76,6 @@ pub struct JobSnapshot {
     pub updated_at_ms: u64,
     /// Monotonic per job; lets a reconnecting client order snapshots.
     pub seq: u64,
-}
-
-/// Options accepted for `kind: "convert"`. Unknown fields are rejected so a
-/// client cannot smuggle engine parameters (paths, codecs, GPU, ...).
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConvertOptions {
-    pub quality: Option<u8>,
-    pub width: Option<u32>,
-    pub height: Option<u32>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CreateJobRequest {
-    pub kind: String,
-    pub file_id: String,
-    pub output_format: String,
-    #[serde(default)]
-    pub options: Option<ConvertOptions>,
 }
 
 pub(crate) fn now_ms() -> u64 {
@@ -102,11 +90,12 @@ pub(crate) fn now_ms() -> u64 {
 pub struct Job {
     pub id: JobId,
     owner: Owner,
-    pub file_id: FileId,
+    /// Inputs in request order. Never empty.
+    pub inputs: Vec<FileId>,
     pub display_stem: String,
-    pub source_format: NativeImageFormat,
-    pub target: NativeImageFormat,
-    pub options: ConvertOptions,
+    /// The validated work. Built once by the create-job handler and then
+    /// trusted; the worker and the engine read it, nothing rewrites it.
+    pub spec: JobSpec,
     pub paths: JobPaths,
     state_tx: watch::Sender<JobSnapshot>,
     cancel: AtomicBool,
@@ -127,19 +116,21 @@ impl Job {
     pub(crate) fn new(
         id: JobId,
         owner: Owner,
-        file_id: FileId,
+        inputs: Vec<FileId>,
         display_stem: String,
-        source_format: NativeImageFormat,
-        target: NativeImageFormat,
-        options: ConvertOptions,
+        spec: JobSpec,
         paths: JobPaths,
     ) -> Arc<Job> {
         let now = now_ms();
         let snapshot = JobSnapshot {
             job_id: id.to_string(),
-            kind: "convert",
-            file_id: file_id.to_string(),
-            output_format: target.canonical_extension(),
+            kind: spec.kind().wire(),
+            file_id: inputs
+                .first()
+                .map(FileId::to_string)
+                .unwrap_or_default(),
+            file_ids: inputs.iter().map(FileId::to_string).collect(),
+            output_format: spec.output_extension(),
             state: JobState::Queued,
             progress_pct: None,
             error: None,
@@ -152,11 +143,9 @@ impl Job {
         Arc::new(Job {
             id,
             owner,
-            file_id,
+            inputs,
             display_stem,
-            source_format,
-            target,
-            options,
+            spec,
             paths,
             state_tx,
             cancel: AtomicBool::new(false),
@@ -255,23 +244,17 @@ impl Job {
     }
 
     pub(crate) fn finish(&self, outcome: Outcome) {
-        let display_stem = self.display_stem.clone();
-        let target = self.target;
-        let same_format = self.source_format == target;
+        let output_name = self.spec.output_name(&self.display_stem);
+        let content_type = self.spec.output_mime();
         self.update(|s| {
             match outcome {
                 Outcome::Completed { size } => {
                     s.state = JobState::Completed;
                     s.progress_pct = Some(100);
-                    let stem = if same_format {
-                        format!("{display_stem}_donusturuldu")
-                    } else {
-                        display_stem
-                    };
                     s.result = Some(JobResultInfo {
-                        output_name: format!("{stem}.{}", target.canonical_extension()),
+                        output_name,
                         size,
-                        content_type: target.mime_type(),
+                        content_type,
                     });
                 }
                 Outcome::Failed { code } => {
@@ -310,10 +293,19 @@ impl Job {
         self.deleted.load(Ordering::SeqCst)
     }
 
+    pub fn kind(&self) -> JobKind {
+        self.spec.kind()
+    }
+
     /// Path of the published output (exists only once completed).
     pub(crate) fn output_path(&self) -> std::path::PathBuf {
-        self.paths
-            .out_dir
-            .join(format!("result.{}", self.target.canonical_extension()))
+        self.paths.out_dir.join(self.output_file_name())
+    }
+
+    /// Fixed name of the single output file, in `work/` while the engine
+    /// writes it and in `out/` once validated. Server-chosen (the spec's
+    /// extension); never derived from a client string.
+    pub(crate) fn output_file_name(&self) -> String {
+        format!("result.{}", self.spec.output_extension())
     }
 }

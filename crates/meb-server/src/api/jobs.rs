@@ -4,9 +4,10 @@
 
 use crate::error::ApiError;
 use crate::ids::JobId;
-use crate::jobs::{CreateJobRequest, Job, JobSnapshot, JobState};
+use crate::jobs::{Job, JobSnapshot, JobState};
 use crate::names::{content_disposition, stem_of};
 use crate::session::Owner;
+use crate::spec::{CreateJobRequest, JobKind, JobSpec};
 use crate::storage::is_regular_file_within;
 use crate::AppState;
 use axum::body::{Body, Bytes};
@@ -19,12 +20,25 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use futures_util::Stream;
-use meb_core::image::{NativeImageFormat, MAX_DECODED_PIXELS, MAX_DIMENSION};
 use std::convert::Infallible;
 use tokio_util::io::ReaderStream;
 
 const MAX_JOB_REQUEST_BYTES: usize = 16 * 1024;
 
+/// Creates one job: name a kind, name an input, describe the work.
+///
+/// Order of decisions - each one narrows what the rest may assume:
+/// 1. the body is a strictly-parsed `CreateJobRequest` (unknown fields are
+///    rejected, so no id or path can be smuggled in);
+/// 2. `kind` must be one this API publishes (`JobKind::parse`);
+/// 3. an engine must be registered for that kind, or the kind is not
+///    reachable at all (`UNSUPPORTED_CONVERSION`) - this is where a kind
+///    whose engine is missing or unimplemented is refused, before any work,
+///    workspace or job record exists;
+/// 4. every input must be this owner's file, and there must be the number
+///    the kind takes;
+/// 5. the request becomes a validated `JobSpec` - the last point at which
+///    client input is interpreted. Everything downstream reads the spec.
 pub async fn create_job(
     State(state): State<AppState>,
     owner: Owner,
@@ -37,26 +51,30 @@ pub async fn create_job(
     // structured error envelope. Unknown fields are rejected.
     let request: CreateJobRequest =
         serde_json::from_slice(&body).map_err(|_| ApiError::invalid_request())?;
-    if request.kind != "convert" {
-        return Err(ApiError::unsupported_conversion());
-    }
-
-    let file = state.registry.find_file(&owner, &request.file_id)?;
-    let target = NativeImageFormat::from_extension(&request.output_format)
+    let kind = JobKind::parse(&request.kind).ok_or_else(ApiError::unsupported_conversion)?;
+    let runner = state
+        .runners
+        .for_kind(kind)
         .ok_or_else(ApiError::unsupported_conversion)?;
-    let options = request.options.unwrap_or_default();
-    validate_options(&options)?;
 
+    let mut files = Vec::new();
+    for raw_id in request.input_ids(kind)? {
+        files.push(state.registry.find_file(&owner, raw_id)?);
+    }
+    let sources: Vec<_> = files.iter().map(|f| f.format).collect();
+    let spec = JobSpec::from_request(kind, &request, &sources)?;
+
+    // The download name is built from the FIRST input, which for a
+    // single-input job is simply "the file".
+    let display_stem = stem_of(&files[0].display_name).to_string();
     let job_id = JobId::generate();
     let paths = state.storage.job_paths(&owner, job_id);
     let job = Job::new(
         job_id,
         owner.clone(),
-        file.id,
-        stem_of(&file.display_name).to_string(),
-        file.format,
-        target,
-        options,
+        files.iter().map(|f| f.id).collect(),
+        display_stem,
+        spec,
         paths.clone(),
     );
     state.registry.insert_job_within_limits(
@@ -65,15 +83,26 @@ pub async fn create_job(
         state.config.max_active_jobs_global,
     )?;
 
-    // Stage the input into the job's own workspace now, so the job no
-    // longer depends on the upload (which may expire independently).
-    let blob = state.storage.file_blob(&owner, file.id);
-    let input = paths
-        .input_dir
-        .join(format!("source.{}", file.format.canonical_extension()));
+    // Stage the inputs into the job's own workspace now, so the job no
+    // longer depends on the uploads (which may expire independently).
+    // Names are positional and server-built, so a display name never
+    // becomes a path component.
+    let staging: Vec<(std::path::PathBuf, std::path::PathBuf)> = files
+        .iter()
+        .enumerate()
+        .map(|(index, file)| {
+            let blob = state.storage.file_blob(&owner, file.id);
+            let input = paths.input_dir.join(format!(
+                "source-{index:02}.{}",
+                file.format.canonical_extension()
+            ));
+            (blob, input)
+        })
+        .collect();
+    let inputs: Vec<std::path::PathBuf> = staging.iter().map(|(_, i)| i.clone()).collect();
     let staged = {
-        let (paths, input) = (paths.clone(), input.clone());
-        tokio::task::spawn_blocking(move || stage_workspace(&paths, &blob, &input)).await
+        let (paths, staging) = (paths.clone(), staging.clone());
+        tokio::task::spawn_blocking(move || stage_workspace(&paths, &staging)).await
     };
     if !matches!(staged, Ok(Ok(()))) {
         tracing::error!(job_id = %job_id, "workspace staging failed");
@@ -84,47 +113,35 @@ pub async fn create_job(
         return Ok((StatusCode::ACCEPTED, Json(job.snapshot())));
     }
 
-    tracing::info!(job_id = %job_id, file_id = %file.id, target = target.canonical_extension(), "job queued");
-    tokio::spawn(crate::worker::run_job(state.clone(), job.clone(), input));
+    tracing::info!(
+        job_id = %job_id,
+        inputs = files.len(),
+        kind = kind.wire(),
+        output_format = job.spec.output_extension(),
+        "job queued"
+    );
+    tokio::spawn(crate::worker::run_job(
+        state.clone(),
+        job.clone(),
+        runner,
+        inputs,
+    ));
     Ok((StatusCode::ACCEPTED, Json(job.snapshot())))
 }
 
-fn validate_options(options: &crate::jobs::ConvertOptions) -> Result<(), ApiError> {
-    if let Some(q) = options.quality {
-        if !(1..=100).contains(&q) {
-            return Err(ApiError::invalid_request());
-        }
-    }
-    match (options.width, options.height) {
-        (None, None) => Ok(()),
-        (Some(w), Some(h)) => {
-            // Same bounds the engine applies to inputs, applied to the
-            // requested output so a resize cannot allocate past them.
-            if w == 0
-                || h == 0
-                || w > MAX_DIMENSION
-                || h > MAX_DIMENSION
-                || (w as u64 * h as u64) > MAX_DECODED_PIXELS
-            {
-                Err(ApiError::invalid_dimensions())
-            } else {
-                Ok(())
-            }
-        }
-        _ => Err(ApiError::invalid_dimensions()),
-    }
-}
-
+/// Creates the job's directories and links (or copies) each stored blob to
+/// its staged input path.
 fn stage_workspace(
     paths: &crate::storage::JobPaths,
-    blob: &std::path::Path,
-    input: &std::path::Path,
+    staging: &[(std::path::PathBuf, std::path::PathBuf)],
 ) -> std::io::Result<()> {
     std::fs::create_dir_all(&paths.input_dir)?;
     std::fs::create_dir_all(&paths.work_dir)?;
     std::fs::create_dir_all(&paths.out_dir)?;
-    if std::fs::hard_link(blob, input).is_err() {
-        std::fs::copy(blob, input)?;
+    for (blob, input) in staging {
+        if std::fs::hard_link(blob, input).is_err() {
+            std::fs::copy(blob, input)?;
+        }
     }
     Ok(())
 }
@@ -257,7 +274,7 @@ pub async fn download(
     let headers = response.headers_mut();
     headers.insert(
         CONTENT_TYPE,
-        HeaderValue::from_static(job.target.mime_type()),
+        HeaderValue::from_static(job.spec.output_mime()),
     );
     headers.insert(CONTENT_LENGTH, HeaderValue::from(size));
     headers.insert(

@@ -10,8 +10,12 @@
 //! - `registry`: the ONLY way to reach a file/job from a client-supplied
 //!   id; every lookup is owner-scoped.
 //! - `storage`: the ONLY place filesystem paths are built (typed ids only).
-//! - `runner`: the engine boundary (`ConversionRunner`). In-process engines
-//!   implement it directly; external engines (LibreOffice, FFmpeg,
+//! - `spec`: what a job is asked to do - the closed `JobKind` set and the
+//!   validated, typed `JobSpec` per kind. The only place a client string
+//!   becomes an operation.
+//! - `runner`: the engine boundary (`ConversionRunner`), one runner per kind
+//!   via `RunnerRegistry`. In-process engines implement it directly;
+//!   external engines (Ghostscript, LibreOffice, Tesseract, FFmpeg,
 //!   whisper.cpp) will implement it on top of the unified process runner in
 //!   a later phase - never the legacy `converter.rs` launcher.
 //! - `worker`: job execution, concurrency limits, panic isolation, cleanup.
@@ -30,6 +34,7 @@ pub mod names;
 pub mod registry;
 pub mod runner;
 pub mod session;
+pub mod spec;
 pub mod storage;
 pub mod worker;
 
@@ -37,7 +42,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 pub use config::Config;
-pub use runner::{ConversionRunner, NativeImageRunner};
+pub use runner::{ConversionRunner, NativeImageRunner, RunnerRegistry};
+pub use spec::{JobKind, JobSpec};
 
 /// Shared server state. Cheap to clone (one `Arc`).
 #[derive(Clone)]
@@ -53,7 +59,9 @@ pub struct AppInner {
     /// uploads`). A stalled upload therefore ties up one slot at most, and
     /// only until its idle timeout fires.
     pub uploads: tokio::sync::Semaphore,
-    pub runner: Arc<dyn ConversionRunner>,
+    /// One engine per job kind. A kind absent from it is not executable and
+    /// is refused at create time (see `api::jobs::create_job`).
+    pub runners: RunnerRegistry,
     /// Directories whose deletion failed (e.g. a file still open by a
     /// download on Windows). Retried by the janitor.
     pub pending_deletions: Mutex<Vec<PathBuf>>,
@@ -101,14 +109,22 @@ pub struct App {
 
 impl App {
     pub fn new(config: Config) -> Result<App, StartupError> {
-        Self::with_runner(config, Arc::new(NativeImageRunner))
+        Self::with_runners(config, RunnerRegistry::production())
     }
 
-    /// Same as `new`, with an explicit engine runner (tests inject runners
-    /// that block, panic or fail to exercise the job lifecycle).
+    /// Same as `new`, with ONE runner handling every job kind (tests inject
+    /// runners that block, panic or fail to exercise the job lifecycle).
     pub fn with_runner(
         config: Config,
         runner: Arc<dyn ConversionRunner>,
+    ) -> Result<App, StartupError> {
+        Self::with_runners(config, RunnerRegistry::uniform(runner))
+    }
+
+    /// Same as `new`, with an explicit kind-to-engine wiring.
+    pub fn with_runners(
+        config: Config,
+        runners: RunnerRegistry,
     ) -> Result<App, StartupError> {
         let storage = storage::Storage::open(&config.data_root).map_err(StartupError::Storage)?;
         let state = AppState(Arc::new(AppInner {
@@ -117,7 +133,7 @@ impl App {
             uploads: tokio::sync::Semaphore::new(config.max_concurrent_uploads.max(1)),
             registry: registry::Registry::default(),
             storage,
-            runner,
+            runners,
             pending_deletions: Mutex::new(Vec::new()),
             config,
         }));

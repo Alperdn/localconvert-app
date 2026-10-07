@@ -191,6 +191,17 @@ impl ApiError {
             _ => Self::file_corrupt(),
         }
     }
+
+    /// Maps a document probe error (`meb_core::document`) onto an upload
+    /// validation error. Its codes are already this vocabulary; an unknown
+    /// one collapses to FILE_CORRUPT rather than being trusted.
+    pub fn from_document_probe(code: &str) -> Self {
+        match code {
+            "UNSUPPORTED_FILE_TYPE" => Self::unsupported_file_type(),
+            "FILE_TYPE_MISMATCH" => Self::file_type_mismatch(),
+            _ => Self::file_corrupt(),
+        }
+    }
 }
 
 impl IntoResponse for ApiError {

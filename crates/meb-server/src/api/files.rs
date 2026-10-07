@@ -9,11 +9,19 @@
 //! RESERVED atomically for this upload so concurrent uploads cannot
 //! overshoot the limits together -> stream to `staging/<uuid>.part` with a
 //! byte counter (abort over cap) and an idle timeout (abort a stalled
-//! body) -> magic-byte sniff of the first bytes (abort early on
-//! non-images) -> extension must agree with the sniffed format ->
-//! structural probe by the engine (dimension/bomb limits, multi-frame) ->
-//! move into the session's file directory under a fixed name. Any failure
-//! deletes the partial file and releases the reservation and the slot.
+//! body) -> magic-byte sniff of the first bytes, which must be a container
+//! that COULD hold the claimed format (abort early on anything else) ->
+//! structural probe of the finished file, which settles what the content
+//! really is -> move into the session's file directory under a fixed name.
+//! Any failure deletes the partial file and releases the reservation and
+//! the slot.
+//!
+//! The claim and the proof are deliberately two different things. A short
+//! prefix can only identify the CONTAINER: every DOCX, XLSX and ODT is a
+//! ZIP, so the streaming check can exclude families but not decide between
+//! them. The probe does decide - `image::probe_file` for a raster image,
+//! `document::probe_file` for a PDF or Office file - and only the probed
+//! format is ever stored.
 
 use crate::error::ApiError;
 use crate::ids::FileId;
@@ -27,14 +35,13 @@ use axum::http::header::CONTENT_LENGTH;
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use futures_util::StreamExt;
-use meb_core::image::{self, NativeImageFormat};
+use meb_core::format::{Container, FormatCategory, SourceFormat, CONTAINER_SNIFF_BYTES};
+use meb_core::{document, image};
 use percent_encoding::percent_decode_str;
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 
 const FILE_NAME_HEADER: &str = "x-file-name";
-/// Bytes needed before the content sniff runs (WebP needs 12).
-const SNIFF_BYTES: usize = 16;
 
 /// Deletes the staged part file unless disarmed.
 struct PartGuard {
@@ -92,10 +99,11 @@ pub async fn upload(
         .try_acquire()
         .map_err(|_| ApiError::server_busy())?;
 
-    // The claimed type comes from the (sanitized) name; it is only accepted
-    // if the content later sniffs as the same format.
+    // The claimed type comes from the (sanitized) name. It decides nothing
+    // on its own: it selects which probe runs and what that probe must
+    // confirm.
     let claimed = extension_of(&display_name)
-        .and_then(|ext| NativeImageFormat::from_extension(&ext))
+        .and_then(|ext| SourceFormat::from_extension(&ext))
         .ok_or_else(ApiError::unsupported_file_type)?;
 
     // Admission: the session's share of quota and file count is taken here,
@@ -113,7 +121,7 @@ pub async fn upload(
         path: part_path.clone(),
         armed: true,
     };
-    let sniffed = stream_to_part(
+    let container = stream_to_part(
         &part_path,
         body,
         declared,
@@ -121,18 +129,14 @@ pub async fn upload(
         cfg.upload_idle_timeout,
     )
     .await?;
-    if sniffed != claimed {
+    if !container.could_hold(claimed) {
         return Err(ApiError::file_type_mismatch());
     }
 
     let probe_path = part_path.clone();
-    let probe = tokio::task::spawn_blocking(move || image::probe_file(&probe_path, sniffed))
+    let probed = tokio::task::spawn_blocking(move || probe(&probe_path, claimed))
         .await
-        .map_err(|e| ApiError::internal("upload probe", e))?
-        .map_err(|e| {
-            tracing::info!(code = e.code(), "upload rejected by probe");
-            ApiError::from_image_probe(e.code())
-        })?;
+        .map_err(|e| ApiError::internal("upload probe", e))??;
 
     let file_id = FileId::generate();
     let dir = state.storage.file_dir(&owner, file_id);
@@ -148,27 +152,77 @@ pub async fn upload(
         file_id,
         owner,
         display_name,
-        sniffed,
+        probed.format,
         declared,
-        probe.width,
-        probe.height,
+        probed.width,
+        probed.height,
     );
     let record = state.registry.insert_file(record, reservation)?;
-    tracing::info!(file_id = %file_id, format = sniffed.canonical_extension(), size = declared, "upload accepted");
+    tracing::info!(
+        file_id = %file_id,
+        format = probed.format.canonical_extension(),
+        size = declared,
+        "upload accepted"
+    );
     Ok((StatusCode::CREATED, Json(record.view())))
+}
+
+/// What the probe of a finished upload established. `width`/`height` are
+/// present only for an image.
+struct ProbedFile {
+    format: SourceFormat,
+    width: Option<u32>,
+    height: Option<u32>,
+}
+
+/// Runs the probe belonging to the claimed format's category, on a file that
+/// is fully written. This is the ONLY place an upload's format is decided.
+///
+/// Blocking: called on a blocking thread.
+fn probe(path: &Path, claimed: SourceFormat) -> Result<ProbedFile, ApiError> {
+    match claimed.category() {
+        FormatCategory::Image => {
+            // Infallible: the category came from `claimed` itself.
+            let format = claimed.image().ok_or_else(ApiError::unsupported_file_type)?;
+            let probe = image::probe_file(path, format).map_err(|e| {
+                tracing::info!(code = e.code(), "image probe rejected the upload");
+                ApiError::from_image_probe(e.code())
+            })?;
+            Ok(ProbedFile {
+                format: SourceFormat::Image(probe.format),
+                width: Some(probe.width),
+                height: Some(probe.height),
+            })
+        }
+        FormatCategory::Pdf | FormatCategory::Office => {
+            let probe = document::probe_file(path, claimed).map_err(|e| {
+                tracing::info!(
+                    code = e.code(),
+                    detail = e.detail().unwrap_or(""),
+                    "document probe rejected the upload"
+                );
+                ApiError::from_document_probe(e.code())
+            })?;
+            Ok(ProbedFile {
+                format: probe.format,
+                width: None,
+                height: None,
+            })
+        }
+    }
 }
 
 /// Streams the body into `path` (created fresh, never overwriting), aborting
 /// as soon as the byte count exceeds the declared length or the cap, the
-/// first bytes are not an image this server handles, or the client stops
-/// sending for longer than `idle_timeout`. Returns the sniffed format.
+/// first bytes are not a container this server opens, or the client stops
+/// sending for longer than `idle_timeout`. Returns the sniffed container.
 async fn stream_to_part(
     path: &Path,
     body: Body,
     declared: u64,
     cap: u64,
     idle_timeout: std::time::Duration,
-) -> Result<NativeImageFormat, ApiError> {
+) -> Result<Container, ApiError> {
     let mut file = tokio::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -178,8 +232,8 @@ async fn stream_to_part(
 
     let mut stream = body.into_data_stream();
     let mut written: u64 = 0;
-    let mut head: Vec<u8> = Vec::with_capacity(SNIFF_BYTES);
-    let mut sniffed: Option<NativeImageFormat> = None;
+    let mut head: Vec<u8> = Vec::with_capacity(CONTAINER_SNIFF_BYTES);
+    let mut sniffed: Option<Container> = None;
 
     // The timeout is per chunk, so a slow-but-progressing upload is never
     // cut off, while one that stops sending is abandoned (and its partial
@@ -199,12 +253,12 @@ async fn stream_to_part(
         if written > declared {
             return Err(ApiError::upload_incomplete());
         }
-        if sniffed.is_none() && head.len() < SNIFF_BYTES {
-            let take = (SNIFF_BYTES - head.len()).min(chunk.len());
+        if sniffed.is_none() && head.len() < CONTAINER_SNIFF_BYTES {
+            let take = (CONTAINER_SNIFF_BYTES - head.len()).min(chunk.len());
             head.extend_from_slice(&chunk[..take]);
-            if head.len() >= SNIFF_BYTES {
+            if head.len() >= CONTAINER_SNIFF_BYTES {
                 sniffed =
-                    Some(image::sniff_format(&head).ok_or_else(ApiError::unsupported_file_type)?);
+                    Some(Container::sniff(&head).ok_or_else(ApiError::unsupported_file_type)?);
             }
         }
         file.write_all(&chunk)
@@ -220,8 +274,9 @@ async fn stream_to_part(
         return Err(ApiError::upload_incomplete());
     }
     match sniffed {
-        Some(f) => Ok(f),
-        None => image::sniff_format(&head).ok_or_else(ApiError::unsupported_file_type),
+        Some(container) => Ok(container),
+        // Shorter than the sniff window: decide on what there is.
+        None => Container::sniff(&head).ok_or_else(ApiError::unsupported_file_type),
     }
 }
 

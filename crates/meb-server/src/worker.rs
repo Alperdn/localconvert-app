@@ -7,7 +7,9 @@
 //!   `catch_unwind`. A panic fails only that job; the server keeps running.
 //! - Validation: an engine "success" is accepted only if the declared output
 //!   is a regular file inside `work/`, non-empty, within `max_output_bytes`,
-//!   and sniffs as the requested format. Only then is it moved to `out/`.
+//!   and sniffs as the format the job's `JobSpec` promised. Only then is it
+//!   moved to `out/`. The check itself is the spec's (`output_matches`), so
+//!   this module stays free of per-format knowledge.
 //! - Cleanup: `in/` and `work/` are always removed; the whole job directory
 //!   is removed on failure, cancellation or deletion.
 //!
@@ -20,7 +22,6 @@ use crate::runner::{ConversionRunner, JobControl, RunError, RunRequest};
 use crate::storage::is_regular_file_within;
 use crate::AppState;
 use std::collections::HashMap;
-use std::io::Read;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -84,7 +85,15 @@ async fn until_terminal(job: &Job) {
 }
 
 /// Runs one job to a terminal state. Spawned by the create-job handler.
-pub(crate) async fn run_job(state: AppState, job: Arc<Job>, input: std::path::PathBuf) {
+///
+/// `runner` is resolved for the job's kind by the create-job handler, so a
+/// job only ever reaches a worker with an engine that handles it.
+pub(crate) async fn run_job(
+    state: AppState,
+    job: Arc<Job>,
+    runner: Arc<dyn ConversionRunner>,
+    inputs: Vec<std::path::PathBuf>,
+) {
     // A job cancelled while queued must not sit in the permit queue behind
     // other sessions' work: it is already terminal, so stop waiting and
     // tear it down now.
@@ -110,11 +119,10 @@ pub(crate) async fn run_job(state: AppState, job: Arc<Job>, input: std::path::Pa
         return;
     }
 
-    let runner = state.runner.clone();
     let max_output = state.config.max_output_bytes;
     let job_for_thread = job.clone();
     let outcome = tokio::task::spawn_blocking(move || {
-        execute(runner.as_ref(), &job_for_thread, &input, max_output)
+        execute(runner.as_ref(), &job_for_thread, &inputs, max_output)
     })
     .await
     .unwrap_or_else(|e| {
@@ -135,21 +143,22 @@ pub(crate) async fn run_job(state: AppState, job: Arc<Job>, input: std::path::Pa
     cleanup(&state, &job);
 }
 
-fn execute(runner: &dyn ConversionRunner, job: &Job, input: &Path, max_output: u64) -> Outcome {
-    let output = job
-        .paths
-        .work_dir
-        .join(format!("result.{}", job.target.canonical_extension()));
+fn execute(
+    runner: &dyn ConversionRunner,
+    job: &Job,
+    inputs: &[std::path::PathBuf],
+    max_output: u64,
+) -> Outcome {
+    let output = job.paths.work_dir.join(job.output_file_name());
     let progress = |pct: u8| job.set_progress(pct);
     let control = JobControl {
         cancel: job.cancel_flag(),
         progress: &progress,
     };
     let request = RunRequest {
-        input,
+        inputs,
         output: &output,
-        target: job.target,
-        options: &job.options,
+        spec: &job.spec,
     };
 
     let result = catch_unwind(AssertUnwindSafe(|| runner.run(&request, &control)));
@@ -193,12 +202,8 @@ fn publish_output(job: &Job, produced: &Path, max_output: u64) -> Outcome {
     if size == 0 || size > max_output {
         return invalid("size out of bounds");
     }
-    let mut head = [0u8; 64];
-    let read = std::fs::File::open(produced)
-        .and_then(|mut f| f.read(&mut head))
-        .unwrap_or(0);
-    if meb_core::image::sniff_format(&head[..read]) != Some(job.target) {
-        return invalid("content does not match the requested format");
+    if let Err(reason) = job.spec.validate_output(produced) {
+        return invalid(reason);
     }
     let destination = job.output_path();
     if std::fs::rename(produced, &destination).is_err() {

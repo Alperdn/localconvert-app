@@ -11,8 +11,14 @@
 //! - `image`: the native raster pipeline (moved from
 //!   `src-tauri/src/native/image`, plus cooperative cancellation hooks and
 //!   upload-time probing).
+//! - `format`: what a file IS - the shared `SourceFormat` vocabulary
+//!   (image/PDF/Office) and container sniffing from magic bytes.
+//! - `document`: structural validation of an untrusted PDF or Office file,
+//!   the document-side counterpart of `image::probe_file`.
 //! - `capabilities`: the shared capability types and the native-image
 //!   capability entries.
 
 pub mod capabilities;
+pub mod document;
+pub mod format;
 pub mod image;

@@ -226,6 +226,10 @@ pub fn job_error_message(code: &str) -> &'static str {
         "IMAGE_MULTI_FRAME_UNSUPPORTED" => {
             "Hareketli GIF ve çok sayfalı TIFF henüz desteklenmiyor."
         }
+        "PDF_ENGINE_UNAVAILABLE" => "PDF işlem motoru bu sunucuda kullanılamıyor.",
+        "PDF_OPERATION_FAILED" => "PDF dosyası işlenemedi.",
+        "PDF_ENGINE_TIMEOUT" => "PDF işlemi zaman sınırını aştı ve durduruldu.",
+        "PDF_PAGE_UNAVAILABLE" => "İstenen sayfalardan biri bu PDF dosyasında bulunamadı.",
         "OUTPUT_VALIDATION_FAILED" => "Dönüştürme çıktısı doğrulanamadı.",
         "WORKSPACE_ERROR" => "Çalışma alanı hazırlanamadı.",
         _ => "Beklenmeyen bir sunucu hatası oluştu.",

@@ -343,8 +343,8 @@ pub fn run_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engines::engine_id::EngineId;
-    use crate::engines::resolver::EngineTier;
+    use crate::engine_id::EngineId;
+    use crate::resolver::EngineTier;
     use std::path::PathBuf;
 
     #[test]

@@ -1,60 +1,50 @@
-//! The single place in the codebase that decides which real executable
-//! backs an `EngineId`.
+//! The desktop app's engine resolution **policy**.
 //!
-//! Resolution order matches the long-term bundled-engine architecture even
-//! though only the last tier does anything today:
+//! The resolution *mechanism* - the bundled -> configured -> system order
+//! and the containment check that keeps a bundled lookup inside its engines
+//! root - lives in `meb_engines::resolver` and is shared verbatim with the
+//! web server. This module is the part that is specific to the installed
+//! desktop product:
 //!
 //! 1. **Bundled** - `<install dir>/engines/<engine>/<exe>`, resolved
-//!    relative to the running executable. Not populated by this build yet
-//!    (no engines are bundled), so this tier is currently always a miss -
-//!    but the lookup itself is real and wired in, so bundling an engine
-//!    later is a matter of dropping files in place, not touching this
-//!    function's callers.
+//!    relative to the running executable.
 //! 2. **Configured** - a future fixed, non-user-writable institutional
-//!    override (e.g. placed by IT deployment tooling). Not implemented
-//!    yet: always `None`. Deliberately NOT read from anything a Tauri
-//!    command or the frontend can influence.
+//!    override (e.g. placed by IT deployment tooling). Not implemented yet:
+//!    always `None`. Deliberately NOT read from anything a Tauri command or
+//!    the frontend can influence.
 //! 3. **System-installed** - PATH + common install locations, via the
-//!    existing scanner in `tools.rs`. This is the only tier that can
-//!    succeed today, and it is intentionally isolated behind this module
-//!    so callers never call `tools::get_tool_path`/`which` directly for
-//!    engines managed here.
+//!    existing scanner in `tools.rs`, with LibreOffice gated behind an
+//!    explicit developer opt-in (see `ALLOW_SYSTEM_OFFICE_FALLBACK_ENV`).
 //!
-//! Once an engine is actually bundled, only `bundled_path` starts
-//! returning `Some` - no caller of `resolve()` needs to change.
+//! Callers keep using `resolve()` / `is_available()` / `bundled_engine_dir()`
+//! exactly as before; none of them has to know a policy exists.
 
 use super::engine_id::EngineId;
 use super::error::EngineError;
 use crate::tools;
+use meb_engines::resolver::{self as mechanism, ResolutionPolicy};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EngineTier {
-    Bundled,
-    Configured,
-    System,
-}
+// Re-exported so `resolver::ResolvedEngine` / `resolver::EngineTier` keep
+// naming the same types for this module's callers. `EngineTier` is consumed
+// only by diagnostics and tests today, hence the allow.
+#[allow(unused_imports)]
+pub use meb_engines::resolver::{EngineTier, ResolvedEngine};
 
-#[derive(Debug, Clone)]
-pub struct ResolvedEngine {
-    pub id: EngineId,
-    pub path: PathBuf,
-    /// Which resolution tier produced `path` - not consumed by any caller
-    /// yet, but load-bearing for future diagnostics (e.g. surfacing
-    /// "using a bundled engine" vs. "using your system install" once a UI
-    /// exists for it) and already exercised by `process.rs`'s tests.
-    #[allow(dead_code)]
-    pub tier: EngineTier,
-}
+/// This application's three tiers, fixed at compile time. Function pointers,
+/// not closures or globals - there is no setter, environment variable or IPC
+/// surface that can repoint resolution at runtime.
+const DESKTOP_POLICY: ResolutionPolicy = ResolutionPolicy {
+    bundled_root: Some(bundled_root_for),
+    configured: Some(configured_path),
+    system: Some(system_path),
+};
 
-/// Root directory a future bundled-engine distribution would live under.
-/// Resolved relative to the running executable so it works both from an
-/// installed location and, harmlessly (it simply won't exist), in dev.
+/// Root directory the bundled-engine distribution lives under. Resolved
+/// relative to the running executable so it works both from an installed
+/// location and, harmlessly (it simply will not exist), in dev.
 fn bundled_root() -> Option<PathBuf> {
-    std::env::current_exe()
-        .ok()?
-        .parent()
-        .map(|p| p.join("engines"))
+    mechanism::exe_relative_engines_root(EngineId::Ghostscript)
 }
 
 /// The bundled engine root for `id`. In `cargo test` builds ONLY, the speech
@@ -64,7 +54,10 @@ fn bundled_root() -> Option<PathBuf> {
 /// that can redirect where a production build looks for these engines.
 fn bundled_root_for(id: EngineId) -> Option<PathBuf> {
     #[cfg(test)]
-    if matches!(id, EngineId::Speech | EngineId::AudioFfmpeg | EngineId::AudioFfprobe) {
+    if matches!(
+        id,
+        EngineId::Speech | EngineId::AudioFfmpeg | EngineId::AudioFfprobe
+    ) {
         return Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("engines"));
     }
     let _ = id;
@@ -73,27 +66,7 @@ fn bundled_root_for(id: EngineId) -> Option<PathBuf> {
 
 /// `<engines root>/<engine dir>` for a bundled engine (existence not checked).
 pub fn bundled_engine_dir(id: EngineId) -> Option<PathBuf> {
-    Some(bundled_root_for(id)?.join(id.bundle_dir_name()))
-}
-
-fn bundled_path(id: EngineId) -> Option<PathBuf> {
-    let root = bundled_root_for(id)?;
-    let dir = root.join(id.bundle_dir_name());
-
-    // Defense in depth: the directory name is derived only from the fixed
-    // `EngineId` enum, never from external input, so this can't actually
-    // escape `root` today. Assert the invariant anyway rather than
-    // trusting every future call site to preserve it forever.
-    if !dir.starts_with(&root) {
-        return None;
-    }
-
-    let candidate = dir.join(id.bundled_exe_name());
-    if candidate.is_file() {
-        Some(candidate)
-    } else {
-        None
-    }
+    mechanism::bundled_engine_dir(id, &DESKTOP_POLICY)
 }
 
 /// Reserved for a future admin/institutional override - e.g. read from a
@@ -158,28 +131,7 @@ fn system_path(id: EngineId) -> Option<PathBuf> {
 /// Resolves `id` to a concrete, spawnable path, or a structured
 /// `EngineError::not_available` if none of the three tiers found one.
 pub fn resolve(id: EngineId) -> Result<ResolvedEngine, EngineError> {
-    if let Some(path) = bundled_path(id) {
-        return Ok(ResolvedEngine {
-            id,
-            path,
-            tier: EngineTier::Bundled,
-        });
-    }
-    if let Some(path) = configured_path(id) {
-        return Ok(ResolvedEngine {
-            id,
-            path,
-            tier: EngineTier::Configured,
-        });
-    }
-    if let Some(path) = system_path(id) {
-        return Ok(ResolvedEngine {
-            id,
-            path,
-            tier: EngineTier::System,
-        });
-    }
-    Err(EngineError::not_available(id))
+    mechanism::resolve_with(id, &DESKTOP_POLICY)
 }
 
 /// Cheap availability check for the capability model - avoids building a
@@ -261,5 +213,18 @@ mod tests {
         if system_path(EngineId::Ffmpeg).is_none() {
             assert!(system_path(EngineId::Ffprobe).is_none());
         }
+    }
+
+    #[test]
+    fn the_desktop_system_tier_goes_through_the_tools_scanner_not_a_bare_path_search() {
+        // The shared default (`meb_engines::resolver::path_lookup`) is a
+        // plain PATH search. This app deliberately does not use it: its
+        // system tier is `tools.rs`'s scanner, which also knows the common
+        // install locations, and which applies the Office opt-in gate
+        // above. A regression that swapped the policy back to the shared
+        // default would silently re-enable a system LibreOffice.
+        let _guard = ENV_GUARD.lock().unwrap();
+        std::env::remove_var(ALLOW_SYSTEM_OFFICE_FALLBACK_ENV);
+        assert!(system_path(EngineId::Office).is_none());
     }
 }

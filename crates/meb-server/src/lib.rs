@@ -14,10 +14,11 @@
 //!   validated, typed `JobSpec` per kind. The only place a client string
 //!   becomes an operation.
 //! - `runner`: the engine boundary (`ConversionRunner`), one runner per kind
-//!   via `RunnerRegistry`. In-process engines implement it directly;
-//!   external engines (Ghostscript, LibreOffice, Tesseract, FFmpeg,
-//!   whisper.cpp) will implement it on top of the unified process runner in
-//!   a later phase - never the legacy `converter.rs` launcher.
+//!   via `RunnerRegistry`. In-process engines implement it directly.
+//! - `engines`: the external engines, each implemented on top of
+//!   `meb_engines` (shared with the desktop app) - never the legacy
+//!   `converter.rs` launcher. Ghostscript (PDF operations) today;
+//!   LibreOffice, Tesseract, FFmpeg and whisper.cpp follow.
 //! - `worker`: job execution, concurrency limits, panic isolation, cleanup.
 //! - `janitor`: TTL expiry of files/jobs/sessions.
 //!
@@ -26,6 +27,7 @@
 
 pub mod api;
 pub mod config;
+pub mod engines;
 pub mod error;
 pub mod ids;
 pub mod janitor;
@@ -42,6 +44,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 pub use config::Config;
+pub use engines::GhostscriptRunner;
 pub use runner::{ConversionRunner, NativeImageRunner, RunnerRegistry};
 pub use spec::{JobKind, JobSpec};
 

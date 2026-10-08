@@ -700,21 +700,26 @@ fn whisper_argv_is_structured_local_and_contains_no_shell_or_url() {
 #[test]
 fn no_network_client_exists_in_dependencies_or_speech_sources() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let cargo = std::fs::read_to_string(root.join("Cargo.toml")).unwrap().to_lowercase();
-    // Only real dependency lines count: Cargo.toml's comments legitimately *mention* removed crates.
-    let deps: String = cargo
-        .split("[dependencies]")
-        .nth(1)
-        .unwrap_or("")
-        .split("\n[")
-        .next()
-        .unwrap_or("")
-        .lines()
-        .map(|l| l.split('#').next().unwrap_or(""))
-        .collect::<Vec<_>>()
-        .join("\n");
-    for banned in ["reqwest", "hyper", "ureq", "isahc", "attohttpc", "surf", "curl", "tungstenite", "websocket", "tokio-tungstenite", "native-tls", "openssl", "rustls"] {
-        assert!(!deps.contains(banned), "network-capable crate in dependencies: {banned}");
+    // Both manifests on the speech path: this crate, and the shared
+    // `meb-engines` crate that now holds the engine resolver, the process
+    // runner and the bundle verifier.
+    for manifest in ["Cargo.toml", "../crates/meb-engines/Cargo.toml"] {
+        let cargo = std::fs::read_to_string(root.join(manifest)).unwrap().to_lowercase();
+        // Only real dependency lines count: Cargo.toml's comments legitimately *mention* removed crates.
+        let deps: String = cargo
+            .split("[dependencies]")
+            .nth(1)
+            .unwrap_or("")
+            .split("\n[")
+            .next()
+            .unwrap_or("")
+            .lines()
+            .map(|l| l.split('#').next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for banned in ["reqwest", "hyper", "ureq", "isahc", "attohttpc", "surf", "curl", "tungstenite", "websocket", "tokio-tungstenite", "native-tls", "openssl", "rustls"] {
+            assert!(!deps.contains(banned), "network-capable crate in {manifest}: {banned}");
+        }
     }
     let files = [
         "src/speech/commands.rs",
@@ -725,8 +730,17 @@ fn no_network_client_exists_in_dependencies_or_speech_sources() {
         "src/engines/speech_manifest.rs",
         "src/engines/audio_prep.rs",
         "src/engines/audio_wav.rs",
-        "src/engines/bundle.rs",
         "src/engines/ffmpeg_manifest.rs",
+        "src/engines/resolver.rs",
+        // Moved into the shared `meb-engines` crate, still squarely on the
+        // speech path: the bundle verifier, the engine identity/error model,
+        // the resolution mechanism, and the process runner that is what
+        // actually spawns whisper.cpp.
+        "../crates/meb-engines/src/bundle.rs",
+        "../crates/meb-engines/src/engine_id.rs",
+        "../crates/meb-engines/src/error.rs",
+        "../crates/meb-engines/src/process.rs",
+        "../crates/meb-engines/src/resolver.rs",
     ];
     for f in files {
         let src = std::fs::read_to_string(root.join(f)).unwrap();

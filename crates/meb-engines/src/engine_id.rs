@@ -24,12 +24,15 @@ pub enum EngineId {
     AudioFfmpeg,
     /// ffprobe from the same minimal build (see `AudioFfmpeg`).
     AudioFfprobe,
+    /// Ghostscript - every PDF page-level operation (merge, split,
+    /// compress, rotate, watermark) and PDF rasterization.
+    Ghostscript,
 }
 
 impl EngineId {
     /// All known engines - used by the capability model and tests. Never
     /// used to turn external input into an `EngineId`.
-    pub const ALL: [EngineId; 7] = [
+    pub const ALL: [EngineId; 8] = [
         EngineId::Office,
         EngineId::Ffmpeg,
         EngineId::Ffprobe,
@@ -37,6 +40,7 @@ impl EngineId {
         EngineId::Speech,
         EngineId::AudioFfmpeg,
         EngineId::AudioFfprobe,
+        EngineId::Ghostscript,
     ];
 
     /// The key this engine is registered under in `tools::TOOLS` / the
@@ -50,6 +54,7 @@ impl EngineId {
             EngineId::Ffmpeg => Some("ffmpeg"),
             EngineId::Ffprobe => None,
             EngineId::Tesseract => Some("tesseract"),
+            EngineId::Ghostscript => Some("gs"),
             // Bundled-only: no PATH / system tier exists for these.
             EngineId::Speech | EngineId::AudioFfmpeg | EngineId::AudioFfprobe => None,
         }
@@ -65,7 +70,57 @@ impl EngineId {
             EngineId::Tesseract => "tesseract",
             EngineId::Speech => "speech",
             EngineId::AudioFfmpeg | EngineId::AudioFfprobe => "ffmpeg",
+            EngineId::Ghostscript => "ghostscript",
         }
+    }
+
+    /// The executable's name as a system install puts it on `PATH`. This is
+    /// the name the default system tier (`resolver::path_lookup`) searches
+    /// for, and it is NOT always `bundled_exe_name` - Ghostscript's console
+    /// build is `gswin64c.exe` on Windows but plain `gs` elsewhere, and a
+    /// system LibreOffice is a bare `soffice`, not the nested
+    /// `LibreOffice/program/soffice.exe` of the bundled payload.
+    ///
+    /// `None` means the engine has no system identity at all: either it is
+    /// bundled-only (`Speech`, `AudioFfmpeg`, `AudioFfprobe`) or it is
+    /// resolved relative to another engine rather than searched for on its
+    /// own (`Ffprobe` - see the desktop resolver's `system_path`).
+    pub fn system_exe_name(self) -> Option<&'static str> {
+        let windows = cfg!(windows);
+        Some(match self {
+            EngineId::Office => {
+                if windows {
+                    "soffice.exe"
+                } else {
+                    "soffice"
+                }
+            }
+            EngineId::Ffmpeg => {
+                if windows {
+                    "ffmpeg.exe"
+                } else {
+                    "ffmpeg"
+                }
+            }
+            EngineId::Tesseract => {
+                if windows {
+                    "tesseract.exe"
+                } else {
+                    "tesseract"
+                }
+            }
+            EngineId::Ghostscript => {
+                if windows {
+                    "gswin64c.exe"
+                } else {
+                    "gs"
+                }
+            }
+            EngineId::Ffprobe
+            | EngineId::Speech
+            | EngineId::AudioFfmpeg
+            | EngineId::AudioFfprobe => return None,
+        })
     }
 
     /// The executable's path *relative to* `engines/<bundle_dir_name()>/`
@@ -127,6 +182,13 @@ impl EngineId {
                     "bin/ffprobe"
                 }
             }
+            EngineId::Ghostscript => {
+                if cfg!(windows) {
+                    "bin/gswin64c.exe"
+                } else {
+                    "bin/gs"
+                }
+            }
         }
     }
 
@@ -141,6 +203,7 @@ impl EngineId {
             EngineId::Speech => "Speech recognition",
             EngineId::AudioFfmpeg => "Audio preprocessing",
             EngineId::AudioFfprobe => "Audio inspection",
+            EngineId::Ghostscript => "PDF processing",
         }
     }
 
@@ -154,6 +217,7 @@ impl EngineId {
             EngineId::Speech => "SPEECH",
             EngineId::AudioFfmpeg => "AUDIO_FFMPEG",
             EngineId::AudioFfprobe => "AUDIO_FFPROBE",
+            EngineId::Ghostscript => "GHOSTSCRIPT",
         }
     }
 
@@ -169,6 +233,7 @@ impl EngineId {
             "ffmpeg" => Some(EngineId::Ffmpeg),
             "ffprobe" => Some(EngineId::Ffprobe),
             "tesseract" => Some(EngineId::Tesseract),
+            "gs" => Some(EngineId::Ghostscript),
             _ => None,
         }
     }
@@ -198,6 +263,8 @@ mod tests {
             "",
             "OFFICE", // case must matter - no case-insensitive backdoor
             "ffmpeg; calc.exe",
+            "gswin64c.exe",
+            "GS",
         ];
         for name in attacker_supplied {
             assert_eq!(

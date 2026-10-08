@@ -1953,6 +1953,7 @@ dependencies = [
  "lazy_static",
  "lopdf",
  "meb-core",
+ "meb-engines",
  "open",
  "serde",
  "serde_json",
@@ -2070,6 +2071,16 @@ dependencies = [
  "serde",
  "tiff",
  "zip",
+]
+
+[[package]]
+name = "meb-engines"
+version = "0.1.0"
+dependencies = [
+ "lazy_static",
+ "serde",
+ "sha2",
+ "which",
 ]
 
 [[package]]

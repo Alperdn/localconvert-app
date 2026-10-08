@@ -22,6 +22,10 @@ path = "src/main.rs"
 
 [dependencies]
 meb-core = { path = "../meb-core" }
+# Engine identity, resolution policy and the sandboxed process runner,
+# shared verbatim with the desktop app (src-tauri). The ONLY way this
+# server starts an external engine process.
+meb-engines = { path = "../meb-engines" }
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "time", "signal", "net"] }
 tokio-util = { version = "0.7", features = ["io"] }
@@ -31,6 +35,9 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 percent-encoding = "2"
+# MIT/Apache-2.0 - packs the per-page PDFs of a split job into the single
+# archive the job model publishes.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 

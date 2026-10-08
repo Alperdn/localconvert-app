@@ -73,6 +73,14 @@ impl JobControl<'_> {
     pub fn report_progress(&self, pct: u8) {
         (self.progress)(pct)
     }
+
+    /// The job's cancel flag itself, for a runner that hands cancellation
+    /// to something which polls it on its own thread - specifically
+    /// `meb_engines::process::run_cancellable`, which uses it to kill and
+    /// reap the child. In-process engines use `is_cancelled` instead.
+    pub(crate) fn cancel_flag(&self) -> &AtomicBool {
+        self.cancel
+    }
 }
 
 #[derive(Debug)]
@@ -118,8 +126,34 @@ impl RunnerRegistry {
 
     /// The engines this server ships with. Kinds backed by an external tool
     /// are added here as each one is migrated onto the process runner.
+    ///
+    /// An external engine is probed ONCE, here, and registered only if it
+    /// actually resolved on this machine. That is what keeps the promise
+    /// above: a kind whose tool is missing is absent from the registry, so
+    /// the create-job handler refuses it with `UNSUPPORTED_CONVERSION`
+    /// instead of accepting jobs that could only ever fail.
     pub fn production() -> Self {
-        Self::new().with(JobKind::ImageConvert, Arc::new(NativeImageRunner))
+        let registry = Self::new().with(JobKind::ImageConvert, Arc::new(NativeImageRunner));
+        match crate::engines::GhostscriptRunner::detect() {
+            Some(ghostscript) => {
+                let ghostscript: Arc<dyn ConversionRunner> = Arc::new(ghostscript);
+                tracing::info!(
+                    kinds = ?crate::engines::GhostscriptRunner::KINDS.map(JobKind::wire),
+                    "ghostscript engine available"
+                );
+                crate::engines::GhostscriptRunner::KINDS
+                    .into_iter()
+                    .fold(registry, |registry, kind| {
+                        registry.with(kind, ghostscript.clone())
+                    })
+            }
+            None => {
+                tracing::warn!(
+                    "ghostscript not found: PDF operations stay off this server's API"
+                );
+                registry
+            }
+        }
     }
 
     pub fn with(mut self, kind: JobKind, runner: Arc<dyn ConversionRunner>) -> Self {
@@ -215,19 +249,16 @@ mod tests {
         }
     }
 
-    /// Kinds whose engine is not wired into the web server yet. They are
-    /// part of the API's vocabulary - a client gets a clear
-    /// `UNSUPPORTED_CONVERSION` rather than a parse error - but nothing
-    /// pretends to execute them.
+    /// Kinds for which NO engine is implemented yet. They are part of the
+    /// API's vocabulary - a client gets a clear `UNSUPPORTED_CONVERSION`
+    /// rather than a parse error - but nothing pretends to execute them.
     ///
-    /// Moving a kind off this list means registering its runner in
-    /// `production()` in the same change, which is what this test enforces
-    /// in both directions.
-    const AWAITING_AN_ENGINE: [JobKind; 7] = [
-        JobKind::PdfMerge,
-        JobKind::PdfSplit,
-        JobKind::PdfCompress,
-        JobKind::PdfRotate,
+    /// This is about code, not about this machine: the four Ghostscript
+    /// kinds have an engine and are therefore not listed, even though
+    /// whether they are *wired* depends on Ghostscript being installed.
+    /// Moving a kind off this list means implementing its runner and
+    /// registering it in `production()` in the same change.
+    const AWAITING_AN_ENGINE: [JobKind; 3] = [
         JobKind::PdfWatermark,
         JobKind::PdfOcr,
         JobKind::OfficeConvert,
@@ -236,19 +267,36 @@ mod tests {
     #[test]
     fn production_wires_exactly_the_kinds_it_can_execute() {
         let registry = RunnerRegistry::production();
+        // An external engine is only wired when it really resolved here, so
+        // what the registry must agree with is that fact - not a hardcoded
+        // expectation about the dev/CI machine.
+        let ghostscript_available = crate::engines::GhostscriptRunner::detect().is_some();
         for kind in JobKind::ALL {
-            let awaiting = AWAITING_AN_ENGINE.contains(&kind);
+            let expected = if AWAITING_AN_ENGINE.contains(&kind) {
+                false
+            } else if crate::engines::GhostscriptRunner::KINDS.contains(&kind) {
+                ghostscript_available
+            } else {
+                true
+            };
             assert_eq!(
                 registry.supports(kind),
-                !awaiting,
-                "kind {} is {} a runner but {} listed as awaiting an engine",
+                expected,
+                "kind {} is {} a runner, which is not what production() promises",
                 kind.wire(),
-                if awaiting { "wired to" } else { "missing" },
-                if awaiting { "also" } else { "not" }
+                if registry.supports(kind) {
+                    "wired to"
+                } else {
+                    "missing"
+                }
             );
         }
         // The native image pipeline is in-process, so it is always wired.
         assert!(registry.supports(JobKind::ImageConvert));
+        // A kind with no engine at all is never wired, whatever is installed.
+        for kind in AWAITING_AN_ENGINE {
+            assert!(!registry.supports(kind));
+        }
     }
 
     #[test]

@@ -1006,16 +1006,78 @@ async fn jpeg_to_png_conversion_end_to_end() {
         };
         assert_eq!(state_of("image_conversion"), "AVAILABLE");
         assert_eq!(state_of("image_resize"), "AVAILABLE");
-        // No document engine is wired in yet, and nothing claims otherwise.
-        assert_eq!(state_of("office_to_pdf"), "NOT_IMPLEMENTED");
-        assert_eq!(state_of("pdf_structural_ops"), "NOT_IMPLEMENTED");
-        assert_eq!(state_of("ocr"), "NOT_IMPLEMENTED");
-        // The kinds a client may post match exactly what is executable.
-        assert_eq!(caps["kinds"].as_array().unwrap(), &[json!("convert")]);
-        assert!(caps["formats"]["office"]["outputs"]
+
+        // The in-process image pipeline needs no external tool, so it is
+        // the one kind that is always executable.
+        let kinds: Vec<&str> = caps["kinds"]
             .as_array()
             .unwrap()
-            .is_empty());
+            .iter()
+            .map(|k| k.as_str().unwrap())
+            .collect();
+        assert!(kinds.contains(&"convert"));
+
+        // Every other capability depends on an external engine being
+        // installed on THIS machine, so what is asserted is the derivation
+        // itself: a capability is AVAILABLE exactly when every job kind it
+        // needs is posted as executable. (Hardcoding "not implemented"
+        // here would instead assert a fact about the dev machine.)
+        let published: &[(&str, &[&str])] = &[
+            ("office_to_pdf", &["office_convert"]),
+            ("pdf_to_office", &["pdf_to_office"]),
+            ("ocr", &["pdf_ocr"]),
+            (
+                "pdf_structural_ops",
+                &[
+                    "pdf_merge",
+                    "pdf_split",
+                    "pdf_compress",
+                    "pdf_rotate",
+                    "pdf_watermark",
+                ],
+            ),
+        ];
+        for (id, needed) in published {
+            let wired = needed.iter().all(|k| kinds.contains(k));
+            let expected = if wired { "AVAILABLE" } else { "NOT_IMPLEMENTED" };
+            assert_eq!(state_of(id), expected, "{id} (kinds: {kinds:?})");
+        }
+        // Watermark and OCR have no engine at all yet, so nothing can wire
+        // them and `pdf_structural_ops` cannot be available either.
+        assert!(!kinds.contains(&"pdf_watermark"));
+        assert!(!kinds.contains(&"pdf_ocr"));
+        assert_eq!(state_of("ocr"), "NOT_IMPLEMENTED");
+        assert_eq!(state_of("pdf_structural_ops"), "NOT_IMPLEMENTED");
+
+        // Advertised formats follow the same rule.
+        let office_outputs = caps["formats"]["office"]["outputs"].as_array().unwrap();
+        assert_eq!(
+            !office_outputs.is_empty(),
+            kinds.contains(&"office_convert"),
+            "office outputs disagree with the wired kinds"
+        );
+        assert_eq!(
+            !caps["formats"]["office"]["conversions"]
+                .as_object()
+                .unwrap()
+                .is_empty(),
+            kinds.contains(&"office_convert")
+        );
+
+        // An experimental operation is only published once it is wired, and
+        // reconstruction is the only one.
+        let experimental: Vec<&str> = caps["experimental_kinds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k.as_str().unwrap())
+            .collect();
+        assert!(experimental.iter().all(|k| kinds.contains(k)));
+        assert_eq!(
+            experimental.contains(&"pdf_to_office"),
+            kinds.contains(&"pdf_to_office")
+        );
+        assert!(!experimental.contains(&"convert"));
     }
 
     let up = c.upload("Öğrenci Fotoğrafı.jpg", jpeg_bytes(40, 30)).await;

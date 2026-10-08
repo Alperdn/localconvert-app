@@ -18,5 +18,7 @@
 //! jobs that could only ever fail.
 
 pub mod ghostscript;
+pub mod libreoffice;
 
 pub use ghostscript::GhostscriptRunner;
+pub use libreoffice::LibreOfficeRunner;

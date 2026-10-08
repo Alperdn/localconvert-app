@@ -17,8 +17,9 @@
 //!   via `RunnerRegistry`. In-process engines implement it directly.
 //! - `engines`: the external engines, each implemented on top of
 //!   `meb_engines` (shared with the desktop app) - never the legacy
-//!   `converter.rs` launcher. Ghostscript (PDF operations) today;
-//!   LibreOffice, Tesseract, FFmpeg and whisper.cpp follow.
+//!   `converter.rs` launcher. Ghostscript (PDF operations) and
+//!   LibreOffice (document conversion and PDF reconstruction) today;
+//!   Tesseract, FFmpeg and whisper.cpp follow.
 //! - `worker`: job execution, concurrency limits, panic isolation, cleanup.
 //! - `janitor`: TTL expiry of files/jobs/sessions.
 //!
@@ -44,7 +45,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 pub use config::Config;
-pub use engines::GhostscriptRunner;
+pub use engines::{GhostscriptRunner, LibreOfficeRunner};
 pub use runner::{ConversionRunner, NativeImageRunner, RunnerRegistry};
 pub use spec::{JobKind, JobSpec};
 

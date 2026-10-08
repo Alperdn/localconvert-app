@@ -19,7 +19,7 @@ use crate::AppState;
 use axum::extract::State;
 use axum::Json;
 use meb_core::capabilities::{capability, native_image_capabilities, CapabilityState};
-use meb_core::format::OfficeFormat;
+use meb_core::format::{OfficeFormat, SourceFormat};
 use serde_json::{json, Value};
 
 /// Which job kinds each capability id needs. A capability with an empty list
@@ -44,6 +44,9 @@ const CAPABILITY_KINDS: &[(&str, &[JobKind])] = &[
         ],
     ),
     ("office_to_pdf", &[JobKind::OfficeConvert]),
+    // PDF -> editable document. A capability of its own, because it is a
+    // different (and experimental) operation - see `JobKind::PdfToOffice`.
+    ("pdf_to_office", &[JobKind::PdfToOffice]),
     ("ocr", &[JobKind::PdfOcr]),
     // No job kind: these engines are not part of the web server.
     ("svg_rasterization", &[]),
@@ -88,9 +91,54 @@ pub async fn get_capabilities(State(state): State<AppState>, _owner: Owner) -> J
         .collect();
     let documents_available = state.runners.supports(JobKind::OfficeConvert);
 
+    // The exact per-input matrix, from the same definition `JobSpec::
+    // from_request` validates against - so what is advertised and what is
+    // accepted cannot drift apart. `outputs` below stays the flat union of
+    // it, which is what the existing clients read.
+    let office_conversions: Value = if documents_available {
+        OfficeFormat::ALL
+            .into_iter()
+            .map(|source| {
+                let targets: Vec<&str> = crate::spec::office_conversion_targets(source)
+                    .into_iter()
+                    .map(SourceFormat::canonical_extension)
+                    .collect();
+                (source.canonical_extension().to_string(), json!(targets))
+            })
+            .collect::<serde_json::Map<String, Value>>()
+            .into()
+    } else {
+        json!({})
+    };
+    let pdf_outputs: Vec<&str> = {
+        let mut outputs = Vec::new();
+        if state.runners.supports(JobKind::PdfMerge) {
+            outputs.push("pdf");
+        }
+        if state.runners.supports(JobKind::PdfToOffice) {
+            outputs.extend(
+                crate::spec::pdf_reconstruction_targets()
+                    .into_iter()
+                    .map(OfficeFormat::canonical_extension),
+            );
+        }
+        outputs
+    };
+
+    // Operations that are wired, but cannot be relied on to preserve the
+    // document. Published so a UI can label them before the user commits a
+    // file to one, rather than leaving the honest label to the download
+    // name alone.
+    let experimental: Vec<&str> = JobKind::ALL
+        .into_iter()
+        .filter(|k| k.is_experimental() && state.runners.supports(*k))
+        .map(JobKind::wire)
+        .collect();
+
     Json(json!({
         "capabilities": caps,
         "kinds": kinds,
+        "experimental_kinds": experimental,
         "limits": {
             "max_upload_bytes": state.config.max_upload_bytes,
             "session_quota_bytes": state.config.session_quota_bytes,
@@ -114,14 +162,14 @@ pub async fn get_capabilities(State(state): State<AppState>, _owner: Owner) -> J
                 } else {
                     Vec::new()
                 },
+                // Which of those outputs each input may actually become:
+                // a text document cannot become a spreadsheet, and no
+                // format converts to itself.
+                "conversions": office_conversions,
             },
             "pdf": {
                 "inputs": ["pdf"],
-                "outputs": if state.runners.supports(JobKind::PdfMerge) {
-                    vec!["pdf"]
-                } else {
-                    Vec::new()
-                },
+                "outputs": pdf_outputs,
             }
         }
     }))
@@ -133,6 +181,9 @@ fn available_message(id: &str) -> &'static str {
     match id {
         "pdf_structural_ops" => "Merge, split, compress, rotate and watermark PDF files.",
         "office_to_pdf" => "Convert Word, Excel and PowerPoint files to PDF.",
+        "pdf_to_office" => {
+            "Rebuild an editable Word document from a PDF. Experimental              (deneysel): layout and tables are often only approximated, and              a scanned PDF yields little usable structure."
+        }
         "ocr" => "Add a searchable text layer to scanned PDF files.",
         _ => "Available.",
     }

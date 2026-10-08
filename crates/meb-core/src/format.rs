@@ -23,6 +23,25 @@ pub enum FormatCategory {
     Office,
 }
 
+/// What kind of document an Office format holds, which is what decides
+/// whether one can be converted into another at all.
+///
+/// LibreOffice loads a format into the application for its class - Writer,
+/// Calc or Impress - and will not turn a text document into a spreadsheet.
+/// Asking it to is not a conversion that produces a worse result; it
+/// produces a meaningless one (historically: a single cell holding the
+/// whole document, or a silent fallback export). So the class is a real
+/// constraint on the conversion matrix, not a quality hint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DocumentClass {
+    /// Word processing - Writer (`docx`, `odt`).
+    Text,
+    /// Spreadsheet - Calc (`xlsx`, `ods`).
+    Spreadsheet,
+    /// Presentation - Impress (`pptx`, `odp`).
+    Presentation,
+}
+
 /// Office formats this project converts: the OOXML trio and their
 /// OpenDocument equivalents. Legacy binary `.doc`/`.xls`/`.ppt` are
 /// deliberately absent - they are a different container (OLE) and are not
@@ -81,6 +100,16 @@ impl OfficeFormat {
         // spelled out so a future format with a different filter (e.g.
         // "writer8") has an obvious place to go.
         self.canonical_extension()
+    }
+
+    /// Which application class this format belongs to. Two Office formats
+    /// are interconvertible only within one class (see `DocumentClass`).
+    pub fn document_class(self) -> DocumentClass {
+        match self {
+            OfficeFormat::Docx | OfficeFormat::Odt => DocumentClass::Text,
+            OfficeFormat::Xlsx | OfficeFormat::Ods => DocumentClass::Spreadsheet,
+            OfficeFormat::Pptx | OfficeFormat::Odp => DocumentClass::Presentation,
+        }
     }
 
     /// Whether this is an OpenDocument (not OOXML) format. The two families
@@ -231,6 +260,47 @@ mod tests {
                 Some(SourceFormat::Office(office))
             );
         }
+    }
+
+    #[test]
+    fn each_document_class_holds_one_ooxml_and_one_opendocument_format() {
+        // The conversion matrix above a class is built from this pairing:
+        // every class must have exactly one of each family, or an
+        // "OOXML <-> OpenDocument" conversion would have no counterpart.
+        for class in [
+            DocumentClass::Text,
+            DocumentClass::Spreadsheet,
+            DocumentClass::Presentation,
+        ] {
+            let members: Vec<OfficeFormat> = OfficeFormat::ALL
+                .into_iter()
+                .filter(|f| f.document_class() == class)
+                .collect();
+            assert_eq!(members.len(), 2, "{class:?}");
+            assert_eq!(
+                members.iter().filter(|f| f.is_opendocument()).count(),
+                1,
+                "{class:?} needs exactly one OpenDocument format"
+            );
+        }
+        // The pairings themselves, spelled out so a mis-assignment fails
+        // here rather than inside an engine.
+        assert_eq!(
+            OfficeFormat::Docx.document_class(),
+            OfficeFormat::Odt.document_class()
+        );
+        assert_eq!(
+            OfficeFormat::Xlsx.document_class(),
+            OfficeFormat::Ods.document_class()
+        );
+        assert_eq!(
+            OfficeFormat::Pptx.document_class(),
+            OfficeFormat::Odp.document_class()
+        );
+        assert_ne!(
+            OfficeFormat::Docx.document_class(),
+            OfficeFormat::Xlsx.document_class()
+        );
     }
 
     #[test]

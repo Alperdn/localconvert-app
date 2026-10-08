@@ -297,7 +297,8 @@ impl ConversionRunner for GhostscriptRunner {
             JobSpec::ImageConvert(_)
             | JobSpec::PdfWatermark(_)
             | JobSpec::PdfOcr(_)
-            | JobSpec::OfficeConvert(_) => Err(RunError::wrong_kind("GhostscriptRunner")),
+            | JobSpec::OfficeConvert(_)
+            | JobSpec::PdfToOffice(_) => Err(RunError::wrong_kind("GhostscriptRunner")),
         }
     }
 }

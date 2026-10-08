@@ -134,26 +134,20 @@ impl RunnerRegistry {
     /// instead of accepting jobs that could only ever fail.
     pub fn production() -> Self {
         let registry = Self::new().with(JobKind::ImageConvert, Arc::new(NativeImageRunner));
-        match crate::engines::GhostscriptRunner::detect() {
-            Some(ghostscript) => {
-                let ghostscript: Arc<dyn ConversionRunner> = Arc::new(ghostscript);
-                tracing::info!(
-                    kinds = ?crate::engines::GhostscriptRunner::KINDS.map(JobKind::wire),
-                    "ghostscript engine available"
-                );
-                crate::engines::GhostscriptRunner::KINDS
-                    .into_iter()
-                    .fold(registry, |registry, kind| {
-                        registry.with(kind, ghostscript.clone())
-                    })
-            }
-            None => {
-                tracing::warn!(
-                    "ghostscript not found: PDF operations stay off this server's API"
-                );
-                registry
-            }
-        }
+        let registry = register_external(
+            registry,
+            "ghostscript",
+            &crate::engines::GhostscriptRunner::KINDS,
+            crate::engines::GhostscriptRunner::detect()
+                .map(|r| Arc::new(r) as Arc<dyn ConversionRunner>),
+        );
+        register_external(
+            registry,
+            "libreoffice",
+            &crate::engines::LibreOfficeRunner::KINDS,
+            crate::engines::LibreOfficeRunner::detect()
+                .map(|r| Arc::new(r) as Arc<dyn ConversionRunner>),
+        )
     }
 
     pub fn with(mut self, kind: JobKind, runner: Arc<dyn ConversionRunner>) -> Self {
@@ -178,6 +172,38 @@ impl RunnerRegistry {
 
     pub fn supports(&self, kind: JobKind) -> bool {
         self.by_kind.contains_key(&kind)
+    }
+}
+
+/// Registers `runner` for every kind it backs, or none of them if the
+/// engine did not resolve on this machine.
+///
+/// The all-or-nothing part is the point: a half-wired engine would make
+/// `GET /capabilities` advertise an operation that `POST /jobs` accepts and
+/// then always fails. Either the tool is there and every kind it backs is
+/// executable, or the kinds are absent from the API entirely.
+fn register_external(
+    registry: RunnerRegistry,
+    engine: &'static str,
+    kinds: &[JobKind],
+    runner: Option<Arc<dyn ConversionRunner>>,
+) -> RunnerRegistry {
+    let kind_names: Vec<&str> = kinds.iter().copied().map(JobKind::wire).collect();
+    match runner {
+        Some(runner) => {
+            tracing::info!(engine, kinds = ?kind_names, "external engine available");
+            kinds.iter().fold(registry, |registry, kind| {
+                registry.with(*kind, runner.clone())
+            })
+        }
+        None => {
+            tracing::warn!(
+                engine,
+                kinds = ?kind_names,
+                "external engine not found: these job kinds stay off this server's API"
+            );
+            registry
+        }
     }
 }
 
@@ -253,16 +279,49 @@ mod tests {
     /// API's vocabulary - a client gets a clear `UNSUPPORTED_CONVERSION`
     /// rather than a parse error - but nothing pretends to execute them.
     ///
-    /// This is about code, not about this machine: the four Ghostscript
-    /// kinds have an engine and are therefore not listed, even though
-    /// whether they are *wired* depends on Ghostscript being installed.
-    /// Moving a kind off this list means implementing its runner and
-    /// registering it in `production()` in the same change.
-    const AWAITING_AN_ENGINE: [JobKind; 3] = [
-        JobKind::PdfWatermark,
-        JobKind::PdfOcr,
-        JobKind::OfficeConvert,
-    ];
+    /// This is about code, not about this machine: a kind backed by an
+    /// implemented external engine is not listed, even though whether it is
+    /// *wired* depends on that tool being installed. Moving a kind off this
+    /// list means implementing its runner and registering it in
+    /// `production()` in the same change.
+    const AWAITING_AN_ENGINE: [JobKind; 2] = [JobKind::PdfWatermark, JobKind::PdfOcr];
+
+    /// The external engines `production()` wires, each with whether it
+    /// resolved here. Mirrors that function, so a new engine added there
+    /// and not here fails `every_external_engine_is_covered_by_the_table`.
+    fn external_engines() -> Vec<(&'static [JobKind], bool)> {
+        vec![
+            (
+                &crate::engines::GhostscriptRunner::KINDS,
+                crate::engines::GhostscriptRunner::detect().is_some(),
+            ),
+            (
+                &crate::engines::LibreOfficeRunner::KINDS,
+                crate::engines::LibreOfficeRunner::detect().is_some(),
+            ),
+        ]
+    }
+
+    #[test]
+    fn every_external_engine_is_covered_by_the_table() {
+        // Every kind that is neither in-process nor awaiting an engine must
+        // belong to exactly one external engine above.
+        for kind in JobKind::ALL {
+            if kind == JobKind::ImageConvert || AWAITING_AN_ENGINE.contains(&kind) {
+                continue;
+            }
+            let owners = external_engines()
+                .iter()
+                .filter(|(kinds, _)| kinds.contains(&kind))
+                .count();
+            assert_eq!(
+                owners,
+                1,
+                "{} is backed by {owners} external engines, expected exactly 1",
+                kind.wire()
+            );
+        }
+    }
 
     #[test]
     fn production_wires_exactly_the_kinds_it_can_execute() {
@@ -270,12 +329,14 @@ mod tests {
         // An external engine is only wired when it really resolved here, so
         // what the registry must agree with is that fact - not a hardcoded
         // expectation about the dev/CI machine.
-        let ghostscript_available = crate::engines::GhostscriptRunner::detect().is_some();
+        let engines = external_engines();
         for kind in JobKind::ALL {
             let expected = if AWAITING_AN_ENGINE.contains(&kind) {
                 false
-            } else if crate::engines::GhostscriptRunner::KINDS.contains(&kind) {
-                ghostscript_available
+            } else if let Some((_, available)) =
+                engines.iter().find(|(kinds, _)| kinds.contains(&kind))
+            {
+                *available
             } else {
                 true
             };

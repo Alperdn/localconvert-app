@@ -22,7 +22,7 @@
 //! flags) past this boundary.
 
 use crate::error::ApiError;
-use meb_core::format::{Container, OfficeFormat, SourceFormat};
+use meb_core::format::{Container, DocumentClass, OfficeFormat, SourceFormat};
 use meb_core::image::{NativeImageFormat, MAX_DECODED_PIXELS, MAX_DIMENSION};
 use serde::Deserialize;
 use std::path::Path;
@@ -65,10 +65,21 @@ pub enum JobKind {
     PdfOcr,
     /// One Office document converted to PDF or to another Office format.
     OfficeConvert,
+    /// One PDF reconstructed back into an editable text document.
+    ///
+    /// Deliberately a kind of its own rather than a direction of
+    /// `OfficeConvert`, because it is a different problem: Office -> PDF is
+    /// rendering (the engine already knows the layout and prints it), while
+    /// PDF -> Office is reconstruction (inferring paragraphs and tables out
+    /// of a format that only records fixed-position drawing operations).
+    /// There is no general solution to it, so this kind is EXPERIMENTAL -
+    /// see `JobKind::is_experimental`. The desktop app draws the same
+    /// boundary in `src-tauri/src/reconstruction.rs`.
+    PdfToOffice,
 }
 
 impl JobKind {
-    pub const ALL: [JobKind; 8] = [
+    pub const ALL: [JobKind; 9] = [
         JobKind::ImageConvert,
         JobKind::PdfMerge,
         JobKind::PdfSplit,
@@ -77,6 +88,7 @@ impl JobKind {
         JobKind::PdfWatermark,
         JobKind::PdfOcr,
         JobKind::OfficeConvert,
+        JobKind::PdfToOffice,
     ];
 
     /// The value a client sends as `kind`, and the one echoed in snapshots.
@@ -92,6 +104,27 @@ impl JobKind {
             JobKind::PdfWatermark => "pdf_watermark",
             JobKind::PdfOcr => "pdf_ocr",
             JobKind::OfficeConvert => "office_convert",
+            JobKind::PdfToOffice => "pdf_to_office",
+        }
+    }
+
+    /// Whether this operation cannot be relied on to preserve the
+    /// document, however technically successful the engine call is.
+    ///
+    /// This is published by `GET /capabilities` and marked on the download
+    /// name (see `output_name`), so a user is told before and after, rather
+    /// than discovering it by comparing the result to the original.
+    pub fn is_experimental(self) -> bool {
+        match self {
+            JobKind::PdfToOffice => true,
+            JobKind::ImageConvert
+            | JobKind::PdfMerge
+            | JobKind::PdfSplit
+            | JobKind::PdfCompress
+            | JobKind::PdfRotate
+            | JobKind::PdfWatermark
+            | JobKind::PdfOcr
+            | JobKind::OfficeConvert => false,
         }
     }
 
@@ -108,7 +141,8 @@ impl JobKind {
             | JobKind::PdfRotate
             | JobKind::PdfWatermark
             | JobKind::PdfOcr
-            | JobKind::OfficeConvert => Arity::One,
+            | JobKind::OfficeConvert
+            | JobKind::PdfToOffice => Arity::One,
         }
     }
 
@@ -257,8 +291,46 @@ pub struct PdfOcrOptions {
 #[derive(Debug, Clone)]
 pub struct OfficeConvertSpec {
     pub source_format: OfficeFormat,
-    /// What to produce. Never an image - checked when the spec is built.
+    /// What to produce: PDF, or an Office format of the same document
+    /// class. Never an image, never the source format itself - all checked
+    /// when the spec is built (`office_conversion_targets`).
     pub target: SourceFormat,
+}
+
+#[derive(Debug, Clone)]
+pub struct PdfToOfficeSpec {
+    /// The editable format to reconstruct into. Only a text-class format:
+    /// the engine opens the PDF in Writer, and nothing in this project
+    /// reconstructs a spreadsheet or a slide deck from one.
+    pub target: OfficeFormat,
+}
+
+/// Everything an Office document of this format may be converted to: PDF,
+/// or another Office format of the SAME document class (`docx <-> odt`, but
+/// never `docx -> ods`). Converting a format to itself is excluded - the
+/// result would be a copy presented as a conversion.
+///
+/// The ONE definition of the Office conversion matrix: `JobSpec::
+/// from_request` validates against it and `GET /capabilities` publishes it,
+/// so what the API accepts and what it advertises cannot drift apart.
+pub fn office_conversion_targets(source: OfficeFormat) -> Vec<SourceFormat> {
+    let mut targets = vec![SourceFormat::Pdf];
+    targets.extend(
+        OfficeFormat::ALL
+            .into_iter()
+            .filter(|f| *f != source && f.document_class() == source.document_class())
+            .map(SourceFormat::Office),
+    );
+    targets
+}
+
+/// The formats a PDF may be reconstructed into. Text-class only, and
+/// EXPERIMENTAL in both of them.
+pub fn pdf_reconstruction_targets() -> Vec<OfficeFormat> {
+    OfficeFormat::ALL
+        .into_iter()
+        .filter(|f| f.document_class() == DocumentClass::Text)
+        .collect()
 }
 
 /// Longest watermark text accepted. Long enough for a school's name and a
@@ -277,6 +349,7 @@ pub enum JobSpec {
     PdfWatermark(PdfWatermarkSpec),
     PdfOcr(PdfOcrOptions),
     OfficeConvert(OfficeConvertSpec),
+    PdfToOffice(PdfToOfficeSpec),
 }
 
 /// A create-job request as it arrives. Parsed strictly: an unknown
@@ -411,11 +484,13 @@ impl JobSpec {
                     .as_deref()
                     .ok_or_else(ApiError::invalid_request)?;
                 let target = SourceFormat::from_extension(requested)
-                    .filter(|t| !matches!(t, SourceFormat::Image(_)))
                     .ok_or_else(ApiError::unsupported_conversion)?;
-                if target == SourceFormat::Office(source_format) {
-                    // Nothing to do, and the result would be a copy
-                    // presented as a conversion.
+                // The matrix is the single definition in
+                // `office_conversion_targets`: it already excludes images,
+                // the source format itself (which would be a copy
+                // presented as a conversion) and every cross-class pair
+                // (a text document cannot become a spreadsheet).
+                if !office_conversion_targets(source_format).contains(&target) {
                     return Err(ApiError::unsupported_conversion());
                 }
                 reject_options(request)?;
@@ -423,6 +498,19 @@ impl JobSpec {
                     source_format,
                     target,
                 }))
+            }
+            JobKind::PdfToOffice => {
+                require_all_pdf(sources)?;
+                let requested = request
+                    .output_format
+                    .as_deref()
+                    .ok_or_else(ApiError::invalid_request)?;
+                let target = SourceFormat::from_extension(requested)
+                    .and_then(|t| t.office())
+                    .filter(|t| pdf_reconstruction_targets().contains(t))
+                    .ok_or_else(ApiError::unsupported_conversion)?;
+                reject_options(request)?;
+                Ok(JobSpec::PdfToOffice(PdfToOfficeSpec { target }))
             }
         }
     }
@@ -437,6 +525,7 @@ impl JobSpec {
             JobSpec::PdfWatermark(_) => JobKind::PdfWatermark,
             JobSpec::PdfOcr(_) => JobKind::PdfOcr,
             JobSpec::OfficeConvert(_) => JobKind::OfficeConvert,
+            JobSpec::PdfToOffice(_) => JobKind::PdfToOffice,
         }
     }
 
@@ -455,6 +544,7 @@ impl JobSpec {
             | JobSpec::PdfWatermark(_)
             | JobSpec::PdfOcr(_) => "pdf",
             JobSpec::OfficeConvert(s) => s.target.canonical_extension(),
+            JobSpec::PdfToOffice(s) => s.target.canonical_extension(),
         }
     }
 
@@ -468,6 +558,7 @@ impl JobSpec {
             | JobSpec::PdfWatermark(_)
             | JobSpec::PdfOcr(_) => "application/pdf",
             JobSpec::OfficeConvert(s) => s.target.mime_type(),
+            JobSpec::PdfToOffice(s) => s.target.mime_type(),
         }
     }
 
@@ -488,6 +579,10 @@ impl JobSpec {
             JobSpec::PdfWatermark(_) => Some("filigranli"),
             JobSpec::PdfOcr(_) => Some("aranabilir"),
             JobSpec::OfficeConvert(_) => None,
+            // Not a naming convenience: the result of a reconstruction is
+            // marked experimental in the name the user downloads, because
+            // that is the artifact they will keep and possibly hand on.
+            JobSpec::PdfToOffice(_) => Some("deneysel"),
         };
         match suffix {
             Some(suffix) => format!("{display_stem}_{suffix}.{extension}"),
@@ -529,6 +624,9 @@ impl JobSpec {
             // An Office output is probed in full: every Office file is a
             // ZIP, so its signature alone would prove almost nothing.
             JobSpec::OfficeConvert(s) => probe_as(path, s.target),
+            // A reconstruction may be a poor rendering of the original, but
+            // it still has to be a real document of the requested type.
+            JobSpec::PdfToOffice(s) => probe_as(path, SourceFormat::Office(s.target)),
         }
     }
 
@@ -1029,7 +1127,8 @@ mod tests {
                 .code,
             "INVALID_REQUEST"
         );
-        // And a PDF is not an Office input.
+        // And a PDF is not an Office input - that direction is a kind of
+        // its own (`pdf_to_office`), not a variation of this one.
         assert!(spec_of(
             JobKind::OfficeConvert,
             &[PDF],
@@ -1037,6 +1136,131 @@ mod tests {
             serde_json::Value::Null
         )
         .is_err());
+    }
+
+    #[test]
+    fn an_office_conversion_never_crosses_a_document_class() {
+        // A text document cannot become a spreadsheet: asking LibreOffice
+        // for it does not produce a worse result, it produces a meaningless
+        // one, so the API must refuse the pair rather than run it.
+        let cross_class = [
+            (OfficeFormat::Docx, "xlsx"),
+            (OfficeFormat::Docx, "ods"),
+            (OfficeFormat::Xlsx, "docx"),
+            (OfficeFormat::Xlsx, "pptx"),
+            (OfficeFormat::Pptx, "odt"),
+            (OfficeFormat::Odp, "ods"),
+        ];
+        for (source, target) in cross_class {
+            let result = spec_of(
+                JobKind::OfficeConvert,
+                &[SourceFormat::Office(source)],
+                Some(target),
+                serde_json::Value::Null,
+            );
+            assert_eq!(
+                result.err().map(|e| e.code),
+                Some("UNSUPPORTED_CONVERSION"),
+                "{source:?} -> {target} must be refused"
+            );
+        }
+
+        // Within a class, both directions work, and so does PDF - which is
+        // exactly what the published matrix says.
+        for source in OfficeFormat::ALL {
+            let targets = office_conversion_targets(source);
+            assert!(targets.contains(&SourceFormat::Pdf), "{source:?}");
+            assert!(
+                !targets.contains(&SourceFormat::Office(source)),
+                "{source:?} must not convert to itself"
+            );
+            for target in &targets {
+                let result = spec_of(
+                    JobKind::OfficeConvert,
+                    &[SourceFormat::Office(source)],
+                    Some(target.canonical_extension()),
+                    serde_json::Value::Null,
+                );
+                assert!(
+                    result.is_ok(),
+                    "{source:?} -> {target:?} is advertised but refused"
+                );
+            }
+            // Every target is PDF or a format of the same class.
+            for target in targets {
+                match target {
+                    SourceFormat::Pdf => {}
+                    SourceFormat::Office(f) => {
+                        assert_eq!(f.document_class(), source.document_class())
+                    }
+                    SourceFormat::Image(_) => panic!("an image is not a document target"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pdf_reconstruction_accepts_only_text_formats_and_labels_itself_experimental() {
+        let reconstruct = |target: &str| {
+            spec_of(
+                JobKind::PdfToOffice,
+                &[PDF],
+                Some(target),
+                serde_json::Value::Null,
+            )
+        };
+
+        // The two the engine's PDF importer can actually target.
+        for target in pdf_reconstruction_targets() {
+            let spec = reconstruct(target.canonical_extension()).unwrap();
+            assert_eq!(spec.output_extension(), target.canonical_extension());
+            assert_eq!(spec.output_mime(), target.mime_type());
+            // The user is told in the one place they cannot miss.
+            assert_eq!(
+                spec.output_name("rapor"),
+                format!("rapor_deneysel.{}", target.canonical_extension())
+            );
+        }
+        assert!(JobKind::PdfToOffice.is_experimental());
+
+        // Nothing reconstructs a spreadsheet or a slide deck from a PDF, so
+        // those are refused rather than silently exported as something else.
+        for target in ["xlsx", "ods", "pptx", "odp", "pdf", "png", "exe"] {
+            assert_eq!(
+                reconstruct(target).err().map(|e| e.code),
+                Some("UNSUPPORTED_CONVERSION"),
+                "{target} must not be a reconstruction target"
+            );
+        }
+        // The target is required, and the input must be a PDF.
+        assert_eq!(
+            spec_of(JobKind::PdfToOffice, &[PDF], None, serde_json::Value::Null)
+                .err()
+                .unwrap()
+                .code,
+            "INVALID_REQUEST"
+        );
+        assert!(spec_of(
+            JobKind::PdfToOffice,
+            &[SourceFormat::Office(OfficeFormat::Docx)],
+            Some("docx"),
+            serde_json::Value::Null
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn only_reconstruction_is_experimental() {
+        // A label that drifted onto a faithful operation would be as
+        // misleading as one missing from an unreliable one.
+        for kind in JobKind::ALL {
+            assert_eq!(
+                kind.is_experimental(),
+                kind == JobKind::PdfToOffice,
+                "{}",
+                kind.wire()
+            );
+        }
     }
 
     #[test]
@@ -1063,6 +1287,13 @@ mod tests {
             )
             .unwrap(),
             spec_of(JobKind::PdfOcr, &[PDF], None, serde_json::Value::Null).unwrap(),
+            spec_of(
+                JobKind::PdfToOffice,
+                &[PDF],
+                Some("docx"),
+                serde_json::Value::Null,
+            )
+            .unwrap(),
         ];
         let names: Vec<String> = specs.iter().map(|s| s.output_name("rapor")).collect();
         let mut unique = names.clone();

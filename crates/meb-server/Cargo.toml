@@ -29,6 +29,13 @@ meb-engines = { path = "../meb-engines" }
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "sync", "time", "signal", "net"] }
 tokio-util = { version = "0.7", features = ["io"] }
+# Serves the built frontend next to the API (MIT). Only the `fs` feature:
+# this is a file server, not a middleware stack.
+tower-http = { version = "0.6", features = ["fs"] }
+# `ServiceExt::oneshot`, to drive that file server from inside a handler -
+# which is what lets the SPA fallback and the cache policy below be plain
+# Rust rather than a layer whose behaviour is implicit.
+tower = { version = "0.5", features = ["util"] }
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -64,6 +71,6 @@ tower = { version = "0.5", features = ["util"] }
 # Builds request bodies that stall mid-upload (idle-timeout tests).
 futures-util = "0.3"
 http-body-util = "0.1"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
 # Builds the minimal OOXML/OpenDocument fixtures the upload tests use.
 zip = { version = "2", default-features = false, features = ["deflate"] }

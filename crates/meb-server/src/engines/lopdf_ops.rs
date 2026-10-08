@@ -37,7 +37,7 @@
 use crate::runner::{ConversionRunner, JobControl, RunError, RunRequest};
 use crate::spec::{
     JobKind, JobSpec, PageNumberPosition, PdfDeletePagesSpec, PdfPageNumbersSpec, PdfProtectSpec,
-    PdfReorderPagesSpec, PdfUnlockSpec,
+    PdfReorderPagesSpec, PdfUnlockSpec, PdfWatermarkSpec,
 };
 use lopdf::encryption::crypt_filters::{Aes256CryptFilter, CryptFilter};
 use lopdf::{Dictionary, Document, EncryptionState, EncryptionVersion, Object, ObjectId, Stream};
@@ -78,10 +78,39 @@ const HELVETICA_DIGIT_EM: f32 = 0.556;
 const DEFAULT_PAGE_WIDTH: f32 = 612.0;
 const DEFAULT_PAGE_HEIGHT: f32 = 792.0;
 
-/// The resource name the page-number font is bound to. Distinctive on
-/// purpose: it is added to the resource dictionary the page already uses,
-/// so it must not collide with a font the document itself defines.
+/// The resource names this engine binds. Distinctive on purpose: they are
+/// added to the resource dictionary the page already uses, so they must not
+/// collide with a font or graphics state the document itself defines.
 const FONT_RESOURCE_NAME: &[u8] = b"MEBPageNo";
+const WATERMARK_FONT_NAME: &[u8] = b"MEBWatermark";
+const WATERMARK_STATE_NAME: &[u8] = b"MEBWatermarkGS";
+
+/// The watermark runs corner to corner, so its angle is the diagonal's:
+/// 45 degrees, as sine and cosine, which is what a PDF text matrix takes.
+const DIAGONAL_COS: f32 = std::f32::consts::FRAC_1_SQRT_2;
+const DIAGONAL_SIN: f32 = std::f32::consts::FRAC_1_SQRT_2;
+
+/// Average width of a Helvetica character, in em. An ESTIMATE (the exact
+/// value is per glyph, from the font's widths table, which a standard-14
+/// font does not ship in the file): uppercase runs near 0.68 em and
+/// lowercase near 0.52, so this sits between them. It is used only to
+/// centre and scale the watermark, where being a few percent out is
+/// invisible - no layout decision depends on it being exact.
+const HELVETICA_AVERAGE_EM: f32 = 0.6;
+
+/// How much of the space available to it the watermark text is scaled to
+/// cover, leaving the rest as a margin at both ends.
+const WATERMARK_DIAGONAL_SHARE: f32 = 0.8;
+
+/// Bounds on the computed watermark size, in points: small enough to stay
+/// legible on a tiny page, large enough not to overflow a huge one.
+const WATERMARK_MIN_SIZE: f32 = 6.0;
+const WATERMARK_MAX_SIZE: f32 = 300.0;
+
+/// Grey level of the watermark fill (0 = black, 1 = white). Mid grey reads
+/// over both dark text and light backgrounds; the opacity the client asked
+/// for does the rest.
+const WATERMARK_GREY: f32 = 0.5;
 
 /// How far up a page tree this runner will walk looking for an inherited
 /// attribute. A bound, not a limit anyone reaches: it stops a document with
@@ -93,7 +122,8 @@ pub struct LopdfRunner;
 impl LopdfRunner {
     /// The job kinds this runner backs. Shared by the registry wiring and
     /// by the test that checks the two agree.
-    pub const KINDS: [JobKind; 7] = [
+    pub const KINDS: [JobKind; 8] = [
+        JobKind::PdfWatermark,
         JobKind::PdfProtect,
         JobKind::PdfUnlock,
         JobKind::PdfMetadataStrip,
@@ -114,12 +144,13 @@ impl ConversionRunner for LopdfRunner {
             JobSpec::PdfDeletePages(spec) => delete_pages(spec, request, control),
             JobSpec::PdfReorderPages(spec) => reorder_pages(spec, request, control),
             JobSpec::PdfExtractText => extract_text(request, control),
+            JobSpec::PdfWatermark(spec) => watermark(spec, request, control),
             JobSpec::ImageConvert(_)
+            | JobSpec::ImageOptimize(_)
             | JobSpec::PdfMerge(_)
             | JobSpec::PdfSplit(_)
             | JobSpec::PdfCompress(_)
             | JobSpec::PdfRotate(_)
-            | JobSpec::PdfWatermark(_)
             | JobSpec::PdfOcr(_)
             | JobSpec::OfficeConvert(_)
             | JobSpec::PdfToOffice(_) => Err(RunError::wrong_kind("LopdfRunner")),
@@ -287,6 +318,46 @@ fn page_numbers(
         })?;
         // Real progress: pages stamped out of pages in the document. The
         // save that follows is the remaining tenth.
+        control.report_progress(((index + 1) * 90 / total) as u8);
+    }
+    save(&mut doc, request, control)
+}
+
+/// Draws a text watermark diagonally across every page.
+///
+/// Content-stream drawing, in this process: the text becomes real PDF text
+/// operators over the page's existing content, inside a transparency
+/// graphics state that carries the requested opacity. It is not a
+/// rasterization step and not a Ghostscript pass, so the pages underneath
+/// are untouched - the document's own text stays selectable and its images
+/// are never re-encoded.
+fn watermark(
+    spec: &PdfWatermarkSpec,
+    request: &RunRequest<'_>,
+    control: &JobControl<'_>,
+) -> Result<(), RunError> {
+    let mut doc = load_decrypted(request, control)?;
+    let pages: Vec<ObjectId> = doc.get_pages().into_values().collect();
+    if pages.is_empty() {
+        return Err(RunError::Failed {
+            code: READ_FAILED,
+            detail: "the document has no pages".to_string(),
+        });
+    }
+
+    // The text is encoded once, for every page: it is the same text, and
+    // the encoding is the one place a character could be rejected.
+    let encoded = pdf_literal(&spec.text);
+    let total = pages.len();
+    for (index, page_id) in pages.into_iter().enumerate() {
+        if control.is_cancelled() {
+            return Err(RunError::Cancelled);
+        }
+        stamp_watermark(&mut doc, page_id, &encoded, spec.text.chars().count(), spec.opacity)
+            .map_err(|e| RunError::Failed {
+                code: OPERATION_FAILED,
+                detail: format!("page {} could not be watermarked: {e}", index + 1),
+            })?;
         control.report_progress(((index + 1) * 90 / total) as u8);
     }
     save(&mut doc, request, control)
@@ -527,20 +598,110 @@ fn stamp_page(
         size = PAGE_NUMBER_SIZE,
     );
 
-    // The overlay is wrapped around the page's existing content rather than
-    // simply appended: a content stream that left the graphics state
-    // pushed would otherwise shift or recolour the number. The leading `q`
-    // stream and the `Q` that opens the overlay make the number's own state
-    // independent of whatever the page did.
+    append_overlay(doc, page_id, ops.into_bytes())?;
+    attach_helvetica(doc, page_id, FONT_RESOURCE_NAME)
+}
+
+/// Draws the watermark on one page.
+///
+/// `encoded` is the already-encoded and escaped PDF string literal body,
+/// and `characters` its length in characters, which is what the size and
+/// the centring are computed from (the encoded bytes may be longer, since
+/// escaping adds backslashes).
+fn stamp_watermark(
+    doc: &mut Document,
+    page_id: ObjectId,
+    encoded: &[u8],
+    characters: usize,
+    opacity: f32,
+) -> Result<(), lopdf::Error> {
+    let (width, height) = page_size(doc, page_id);
+    let size = watermark_size(width, height, characters);
+    let (x, y) = watermark_origin(width, height, size, characters);
+
+    // `gs` applies the transparency state; `Tm` places and rotates the text
+    // in one matrix, which is why no `cm` is needed. Everything inside the
+    // q/Q pair, so the page's own graphics state is left as it was.
+    let mut ops: Vec<u8> = format!(
+        "Q\nq\n/{state} gs\n{grey} {grey} {grey} rg\nBT\n/{font} {size:.2} Tf\n\
+         {cos:.4} {sin:.4} {neg_sin:.4} {cos:.4} {x:.2} {y:.2} Tm\n(",
+        state = String::from_utf8_lossy(WATERMARK_STATE_NAME),
+        font = String::from_utf8_lossy(WATERMARK_FONT_NAME),
+        grey = WATERMARK_GREY,
+        cos = DIAGONAL_COS,
+        sin = DIAGONAL_SIN,
+        neg_sin = -DIAGONAL_SIN,
+    )
+    .into_bytes();
+    ops.extend_from_slice(encoded);
+    ops.extend_from_slice(b") Tj\nET\nQ\n");
+
+    append_overlay(doc, page_id, ops)?;
+
+    // The transparency state carrying the requested opacity, for both
+    // filling and stroking - the text is filled, but a viewer that strokes
+    // it must not draw it opaque.
+    let state = doc.add_object(Dictionary::from_iter(vec![
+        (b"Type".to_vec(), Object::Name(b"ExtGState".to_vec())),
+        (b"ca".to_vec(), Object::Real(opacity)),
+        (b"CA".to_vec(), Object::Real(opacity)),
+    ]));
+    attach_resource(doc, page_id, b"ExtGState", WATERMARK_STATE_NAME, state)?;
+    attach_helvetica(doc, page_id, WATERMARK_FONT_NAME)
+}
+
+/// Point size that makes `characters` characters span most of the room a
+/// 45-degree line has on the page.
+///
+/// That room is NOT the page diagonal: the diagonal of a portrait page runs
+/// at about 55 degrees, so a 45-degree line through the centre runs out of
+/// width before it runs out of height. The longest one that fits a w-by-h
+/// page is `sqrt(2) * min(w, h)`, and scaling to the diagonal instead would
+/// push the end of the text off the side of every page that is not square.
+fn watermark_size(width: f32, height: f32, characters: usize) -> f32 {
+    let available = std::f32::consts::SQRT_2 * width.min(height);
+    let characters = characters.max(1) as f32;
+    let size = (available * WATERMARK_DIAGONAL_SHARE) / (HELVETICA_AVERAGE_EM * characters);
+    size.clamp(WATERMARK_MIN_SIZE, WATERMARK_MAX_SIZE)
+}
+
+/// Where the rotated baseline starts, so that the text is centred on the
+/// page: back off half the text's length along the diagonal, then half a
+/// line perpendicular to it so the glyphs straddle the centre rather than
+/// sitting above it.
+fn watermark_origin(width: f32, height: f32, size: f32, characters: usize) -> (f32, f32) {
+    let text_width = HELVETICA_AVERAGE_EM * size * characters.max(1) as f32;
+    let half = text_width / 2.0;
+    // Roughly half the cap height of Helvetica.
+    let drop = 0.35 * size;
+    (
+        width / 2.0 - half * DIAGONAL_COS + drop * DIAGONAL_SIN,
+        height / 2.0 - half * DIAGONAL_SIN - drop * DIAGONAL_COS,
+    )
+}
+
+/// Appends a drawing to a page's content, wrapped so that it cannot be
+/// affected by - or affect - what the page already draws.
+///
+/// The wrapping is not decoration: a content stream that left the graphics
+/// state pushed (legal, and not rare) would otherwise shift, rotate or
+/// recolour whatever is appended after it. A leading `q` stream plus the
+/// `Q` that every overlay here opens with makes the overlay's own state
+/// independent of the page's.
+fn append_overlay(
+    doc: &mut Document,
+    page_id: ObjectId,
+    ops: Vec<u8>,
+) -> Result<(), lopdf::Error> {
     let prologue = doc.add_object(Stream::new(Dictionary::new(), b"q\n".to_vec()));
-    let overlay = doc.add_object(Stream::new(Dictionary::new(), ops.into_bytes()));
+    let overlay = doc.add_object(Stream::new(Dictionary::new(), ops));
 
     let page = doc.get_dictionary_mut(page_id)?;
     let contents = match page.get(b"Contents") {
         Ok(Object::Reference(id)) => vec![Object::Reference(*id)],
         Ok(Object::Array(existing)) => existing.clone(),
-        // A page with no content at all is legal (it is blank); the number
-        // becomes its only content.
+        // A page with no content at all is legal (it is blank); the
+        // overlay becomes its only content.
         _ => Vec::new(),
     };
     let mut rebuilt = Vec::with_capacity(contents.len() + 2);
@@ -548,8 +709,76 @@ fn stamp_page(
     rebuilt.extend(contents);
     rebuilt.push(Object::Reference(overlay));
     page.set("Contents", Object::Array(rebuilt));
+    Ok(())
+}
 
-    attach_helvetica(doc, page_id)
+/// Turns user text into the body of a PDF string literal drawn with a
+/// standard font.
+///
+/// Two separate jobs, both required:
+///
+/// 1. ENCODING. A standard-14 font is addressed through WinAnsiEncoding,
+///    which is Latin-1 plus a few typographic characters - so `ş`, `ğ` and
+///    `ı` have no code there, and a document that used them would show
+///    nothing, or a box, where a Turkish watermark was meant to be. They
+///    are therefore transliterated to their unaccented Latin forms
+///    (`GİZLİ` is drawn `GIZLI`). That is a visible, predictable
+///    degradation of a decorative overlay, which is the best available
+///    outcome without embedding a font subset in the document.
+/// 2. ESCAPING. `(`, `)` and `\` end or alter a string literal, so they are
+///    escaped. The text is sanitized of control characters when the spec is
+///    built, and it is never a command-line argument (nothing is spawned
+///    here) - but it IS written into a PDF syntax context, and this is the
+///    boundary where that matters.
+fn pdf_literal(text: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len() + 8);
+    for ch in text.chars() {
+        for byte in winansi_bytes(ch) {
+            match byte {
+                b'(' | b')' | b'\\' => {
+                    out.push(b'\\');
+                    out.push(byte);
+                }
+                _ => out.push(byte),
+            }
+        }
+    }
+    out
+}
+
+/// One character as WinAnsiEncoding bytes, transliterating what that
+/// encoding cannot represent. A character with no sensible Latin form at
+/// all is dropped rather than drawn as a wrong glyph.
+fn winansi_bytes(ch: char) -> Vec<u8> {
+    // Turkish first: these are the ones a Turkish watermark will actually
+    // contain, and the ones Latin-1 is missing.
+    let transliterated = match ch {
+        'ş' => Some("s"),
+        'Ş' => Some("S"),
+        'ğ' => Some("g"),
+        'Ğ' => Some("G"),
+        'ı' => Some("i"),
+        'İ' => Some("I"),
+        // Typographic characters a copy-paste easily brings along.
+        '\u{2018}' | '\u{2019}' => Some("'"),
+        '\u{201c}' | '\u{201d}' => Some("\""),
+        '\u{2013}' | '\u{2014}' => Some("-"),
+        '\u{2026}' => Some("..."),
+        _ => None,
+    };
+    if let Some(ascii) = transliterated {
+        return ascii.as_bytes().to_vec();
+    }
+    // The rest of WinAnsiEncoding that coincides with Unicode: printable
+    // ASCII and the Latin-1 supplement (which covers ç, ö, ü, â and the
+    // rest of Turkish). Codes 0x80-0x9f differ between the two encodings,
+    // so nothing is mapped into them.
+    let code = ch as u32;
+    if (0x20..=0x7e).contains(&code) || (0xa0..=0xff).contains(&code) {
+        vec![code as u8]
+    } else {
+        Vec::new()
+    }
 }
 
 /// Where the number's baseline goes, in PDF user space (origin at the
@@ -612,46 +841,63 @@ fn inherited<'a>(doc: &'a Document, page_id: ObjectId, key: &[u8]) -> Option<&'a
     None
 }
 
-/// Makes `FONT_RESOURCE_NAME` resolve to Helvetica for this page.
+/// Makes `name` resolve to Helvetica for this page.
+fn attach_helvetica(
+    doc: &mut Document,
+    page_id: ObjectId,
+    name: &[u8],
+) -> Result<(), lopdf::Error> {
+    let font = doc.add_object(Dictionary::from_iter(vec![
+        (b"Type".to_vec(), Object::Name(b"Font".to_vec())),
+        (b"Subtype".to_vec(), Object::Name(b"Type1".to_vec())),
+        // One of the 14 standard fonts: present in every PDF reader, so
+        // nothing has to be embedded. Its encoding is what `pdf_literal`
+        // writes for.
+        (b"BaseFont".to_vec(), Object::Name(b"Helvetica".to_vec())),
+        (b"Encoding".to_vec(), Object::Name(b"WinAnsiEncoding".to_vec())),
+    ]));
+    attach_resource(doc, page_id, b"Font", name, font)
+}
+
+/// Binds `name` to `value` in one category (`/Font`, `/ExtGState`, ...) of
+/// this page's resources.
 ///
-/// The font is added to the resource dictionary the page ALREADY uses -
+/// The entry is added to the resource dictionary the page ALREADY uses -
 /// its own, a shared one it references, or the one it inherits from an
 /// ancestor - rather than by setting a fresh /Resources on the page. The
 /// difference matters: a page-level resource dictionary shadows the
 /// inherited one completely, so creating one would silently strip the fonts
 /// and images the page's existing content depends on.
-fn attach_helvetica(doc: &mut Document, page_id: ObjectId) -> Result<(), lopdf::Error> {
-    let font = doc.add_object(Dictionary::from_iter(vec![
-        (b"Type".to_vec(), Object::Name(b"Font".to_vec())),
-        (b"Subtype".to_vec(), Object::Name(b"Type1".to_vec())),
-        // One of the 14 standard fonts: present in every PDF reader, so
-        // nothing has to be embedded.
-        (b"BaseFont".to_vec(), Object::Name(b"Helvetica".to_vec())),
-        (b"Encoding".to_vec(), Object::Name(b"WinAnsiEncoding".to_vec())),
-    ]));
-
-    match resources_slot(doc, page_id) {
-        // The /Font sub-dictionary is a separate object: add the entry
-        // there, which is where this page's fonts already live.
-        Some(ResourcesSlot::Fonts(id)) => {
-            doc.get_dictionary_mut(id)?.set(FONT_RESOURCE_NAME, Object::Reference(font));
+fn attach_resource(
+    doc: &mut Document,
+    page_id: ObjectId,
+    category: &[u8],
+    name: &[u8],
+    value: ObjectId,
+) -> Result<(), lopdf::Error> {
+    match resources_slot(doc, page_id, category) {
+        // The category's sub-dictionary is a separate object: add the entry
+        // there, which is where this page's resources of that kind already
+        // live, and leave the resource dictionary itself untouched.
+        Some(ResourcesSlot::Category(id)) => {
+            doc.get_dictionary_mut(id)?.set(name, Object::Reference(value));
         }
         Some(ResourcesSlot::Shared(id)) => {
             let resources = doc.get_dictionary_mut(id)?;
-            set_font(resources, font);
+            set_in_category(resources, category, name, value);
         }
         Some(ResourcesSlot::Inline(node)) => {
             let resources = doc
                 .get_dictionary_mut(node)?
                 .get_mut(b"Resources")?
                 .as_dict_mut()?;
-            set_font(resources, font);
+            set_in_category(resources, category, name, value);
         }
         // No resource dictionary anywhere: there is nothing to shadow, so
         // the page gets one of its own.
         None => {
             let mut resources = Dictionary::new();
-            set_font(&mut resources, font);
+            set_in_category(&mut resources, category, name, value);
             doc.get_dictionary_mut(page_id)?
                 .set("Resources", Object::Dictionary(resources));
         }
@@ -659,10 +905,10 @@ fn attach_helvetica(doc: &mut Document, page_id: ObjectId) -> Result<(), lopdf::
     Ok(())
 }
 
-/// Where a page's resource dictionary lives.
+/// Where the entry for a resource category has to be written.
 enum ResourcesSlot {
-    /// The /Font sub-dictionary is its own object, with this id.
-    Fonts(ObjectId),
+    /// The category's sub-dictionary is its own object, with this id.
+    Category(ObjectId),
     /// The resource dictionary is its own object, with this id.
     Shared(ObjectId),
     /// The resource dictionary is inline in this object (the page itself or
@@ -670,24 +916,25 @@ enum ResourcesSlot {
     Inline(ObjectId),
 }
 
-fn resources_slot(doc: &Document, page_id: ObjectId) -> Option<ResourcesSlot> {
+fn resources_slot(
+    doc: &Document,
+    page_id: ObjectId,
+    category: &[u8],
+) -> Option<ResourcesSlot> {
     let mut node = page_id;
     for _ in 0..MAX_TREE_DEPTH {
         let dict = doc.get_dictionary(node).ok()?;
         match dict.get(b"Resources") {
             Ok(Object::Reference(id)) => {
                 let id = *id;
-                // Prefer the /Font dictionary itself when it is a separate
-                // object, so a resource dictionary shared between pages is
-                // not rewritten at all.
-                return Some(match font_object(doc, doc.get_dictionary(id).ok()?) {
-                    Some(fonts) => ResourcesSlot::Fonts(fonts),
+                return Some(match category_object(doc, doc.get_dictionary(id).ok()?, category) {
+                    Some(sub) => ResourcesSlot::Category(sub),
                     None => ResourcesSlot::Shared(id),
                 });
             }
             Ok(Object::Dictionary(resources)) => {
-                return Some(match font_object(doc, resources) {
-                    Some(fonts) => ResourcesSlot::Fonts(fonts),
+                return Some(match category_object(doc, resources, category) {
+                    Some(sub) => ResourcesSlot::Category(sub),
                     None => ResourcesSlot::Inline(node),
                 });
             }
@@ -698,22 +945,31 @@ fn resources_slot(doc: &Document, page_id: ObjectId) -> Option<ResourcesSlot> {
     None
 }
 
-/// The id of a resource dictionary's /Font object, when it is one.
-fn font_object(doc: &Document, resources: &Dictionary) -> Option<ObjectId> {
-    let id = resources.get(b"Font").and_then(Object::as_reference).ok()?;
-    // Only if it really is a dictionary we can add an entry to.
+/// The id of a resource category's dictionary, when it is a separate
+/// object this engine can add an entry to.
+fn category_object(
+    doc: &Document,
+    resources: &Dictionary,
+    category: &[u8],
+) -> Option<ObjectId> {
+    let id = resources.get(category).and_then(Object::as_reference).ok()?;
     doc.get_dictionary(id).ok().map(|_| id)
 }
 
-/// Adds the page-number font to a resource dictionary's inline /Font
-/// dictionary, creating that dictionary if the resources have none.
-fn set_font(resources: &mut Dictionary, font: ObjectId) {
-    let mut fonts = match resources.get(b"Font") {
+/// Adds one entry to a resource dictionary's inline category dictionary,
+/// creating that dictionary if the resources have none.
+fn set_in_category(
+    resources: &mut Dictionary,
+    category: &[u8],
+    name: &[u8],
+    value: ObjectId,
+) {
+    let mut entries = match resources.get(category) {
         Ok(Object::Dictionary(existing)) => existing.clone(),
         _ => Dictionary::new(),
     };
-    fonts.set(FONT_RESOURCE_NAME, Object::Reference(font));
-    resources.set("Font", Object::Dictionary(fonts));
+    entries.set(name, Object::Reference(value));
+    resources.set(category, Object::Dictionary(entries));
 }
 
 #[cfg(test)]
@@ -871,10 +1127,10 @@ mod tests {
     }
 
     #[test]
-    fn this_runner_needs_no_engine_so_it_handles_exactly_its_seven_kinds() {
+    fn this_runner_needs_no_engine_so_it_handles_exactly_its_eight_kinds() {
         // The point of the whole module: no `detect`, nothing to resolve,
         // nothing that could make these kinds unavailable on a machine.
-        assert_eq!(LopdfRunner::KINDS.len(), 7);
+        assert_eq!(LopdfRunner::KINDS.len(), 8);
         let workspace = Workspace::new();
         let input = workspace.input(&fixture_pdf(2, Some("Sayfa")));
         let output = workspace.output("pdf");
@@ -1268,6 +1524,152 @@ mod tests {
             );
             assert!(formatted.contains("redacted"), "{formatted}");
         }
+    }
+
+    #[test]
+    fn a_watermark_is_drawn_on_every_page_over_the_existing_content() {
+        let workspace = Workspace::new();
+        let input = workspace.input(&fixture_pdf(3, Some("Sayfa")));
+        let output = workspace.output("pdf");
+        let spec = spec_for(
+            JobKind::PdfWatermark,
+            serde_json::json!({ "text": "GIZLI", "opacity": 0.25 }),
+        );
+        assert_eq!(code_of(run_job(&spec, &input, &output).0), "OK");
+
+        let stamped = Document::load(&output).unwrap();
+        assert_eq!(stamped.get_pages().len(), 3);
+        for (page_number, page_id) in stamped.get_pages() {
+            let content = stamped.get_page_content(page_id).unwrap();
+            let content = String::from_utf8_lossy(&content);
+            assert!(
+                content.contains("(GIZLI) Tj"),
+                "page {page_number} carries no watermark: {content}"
+            );
+            // Drawn at 45 degrees, through a text matrix.
+            assert!(content.contains("0.7071 0.7071 -0.7071 0.7071"), "{content}");
+            // Through a transparency state, not opaque.
+            assert!(content.contains("gs"), "{content}");
+            // And the page's own content is still there and still first.
+            let own = content.find("(Sayfa").expect("the page lost its text");
+            let mark = content.find("(GIZLI").unwrap();
+            assert!(own < mark, "the watermark was drawn under the content");
+
+            // The font it uses resolves, and so does the page's own.
+            let fonts = stamped.get_page_fonts(page_id).unwrap();
+            assert!(fonts.contains_key(WATERMARK_FONT_NAME), "page {page_number}");
+            assert!(fonts.contains_key(b"F1".as_slice()), "page {page_number}");
+        }
+        assert!(spec.validate_output(&output).is_ok());
+    }
+
+    #[test]
+    fn the_requested_opacity_reaches_the_graphics_state() {
+        let workspace = Workspace::new();
+        let input = workspace.input(&fixture_pdf(1, Some("Sayfa")));
+        let output = workspace.output("pdf");
+        // An explicit opacity, and the default when none is given.
+        for (options, expected) in [
+            (serde_json::json!({ "text": "GIZLI", "opacity": 0.75 }), 0.75f32),
+            (serde_json::json!({ "text": "GIZLI" }), 0.3),
+        ] {
+            let spec = spec_for(JobKind::PdfWatermark, options);
+            assert_eq!(code_of(run_job(&spec, &input, &output).0), "OK");
+            let stamped = Document::load(&output).unwrap();
+            let page_id = stamped.get_pages()[&1];
+            let state = graphics_state(&stamped, page_id)
+                .expect("the watermark graphics state is not reachable from the page");
+            let alpha = state.get(b"ca").unwrap().as_float().unwrap();
+            assert!(
+                (alpha - expected).abs() < 0.001,
+                "opacity {alpha} is not the requested {expected}"
+            );
+            // Stroking alpha too, so a viewer that strokes the glyphs does
+            // not draw them opaque.
+            assert_eq!(state.get(b"CA").unwrap().as_float().unwrap(), alpha);
+        }
+    }
+
+    /// The watermark's /ExtGState entry, resolved the way a reader would:
+    /// through the page's own resources or the ones it inherits.
+    fn graphics_state<'a>(doc: &'a Document, page_id: ObjectId) -> Option<&'a Dictionary> {
+        let resources = inherited(doc, page_id, b"Resources")?.as_dict().ok()?;
+        let states = resources.get_deref(b"ExtGState", doc).ok()?.as_dict().ok()?;
+        states
+            .get_deref(WATERMARK_STATE_NAME, doc)
+            .ok()?
+            .as_dict()
+            .ok()
+    }
+
+    #[test]
+    fn watermark_text_is_encoded_for_the_font_and_escaped_for_the_syntax() {
+        // Parentheses and backslashes end or alter a PDF string literal, so
+        // text containing them must not be written raw.
+        assert_eq!(pdf_literal("a(b)c"), b"a\\(b\\)c".to_vec());
+        assert_eq!(pdf_literal("a\\b"), b"a\\\\b".to_vec());
+
+        // Turkish characters WinAnsiEncoding has: kept as their Latin-1
+        // bytes, so they are drawn correctly.
+        assert_eq!(pdf_literal("çöüÇÖÜ"), vec![0xe7, 0xf6, 0xfc, 0xc7, 0xd6, 0xdc]);
+        // Turkish characters it does not have: transliterated, because the
+        // alternative is a blank or a box where the watermark should be.
+        assert_eq!(pdf_literal("GİZLİ ŞĞI ışğ"), b"GIZLI SGI isg".to_vec());
+        // Nothing sensible to draw: dropped rather than drawn wrong.
+        assert_eq!(pdf_literal("ok \u{4e2d}\u{6587}"), b"ok ".to_vec());
+        // Nothing is ever mapped into 0x80-0x9f, where WinAnsiEncoding and
+        // Unicode disagree.
+        for byte in pdf_literal("\u{2018}\u{2019}\u{201c}\u{201d}\u{2013}\u{2026}") {
+            assert!(!(0x80..=0x9f).contains(&byte), "byte {byte:#x}");
+        }
+    }
+
+    #[test]
+    fn a_watermark_is_scaled_and_centred_on_the_page() {
+        // A4 and a long and a short text: the mark must stay on the page
+        // and stay within the size bounds, whatever it says.
+        let (width, height) = (595.0f32, 842.0f32);
+        for characters in [1usize, 5, 40, 120] {
+            let size = watermark_size(width, height, characters);
+            assert!(
+                (WATERMARK_MIN_SIZE..=WATERMARK_MAX_SIZE).contains(&size),
+                "{characters} characters gave size {size}"
+            );
+            let (x, y) = watermark_origin(width, height, size, characters);
+            // Both ends of the rotated baseline are on the page.
+            let text_width = HELVETICA_AVERAGE_EM * size * characters as f32;
+            let (end_x, end_y) = (
+                x + text_width * DIAGONAL_COS,
+                y + text_width * DIAGONAL_SIN,
+            );
+            for (px, py) in [(x, y), (end_x, end_y)] {
+                assert!(
+                    (0.0..=width).contains(&px) && (0.0..=height).contains(&py),
+                    "{characters} characters put ({px}, {py}) off a {width}x{height} page"
+                );
+            }
+            // And the text is centred: the middle of the baseline, moved
+            // back off the half-line perpendicular drop that puts the
+            // glyph bodies across the centre rather than above it, IS the
+            // page centre.
+            let drop = 0.35 * size;
+            let centred_x = (x + end_x) / 2.0 - drop * DIAGONAL_SIN;
+            let centred_y = (y + end_y) / 2.0 + drop * DIAGONAL_COS;
+            assert!(
+                (centred_x - width / 2.0).abs() < 0.01
+                    && (centred_y - height / 2.0).abs() < 0.01,
+                "{characters} characters centre on ({centred_x}, {centred_y})"
+            );
+        }
+        // A longer text gets a smaller size, which is what keeps it on the
+        // page rather than running off the corner.
+        assert!(watermark_size(width, height, 40) < watermark_size(width, height, 5));
+        // A landscape page of the same size is treated the same way: what
+        // limits a 45-degree line is the SHORTER side, not the diagonal.
+        assert_eq!(
+            watermark_size(width, height, 12),
+            watermark_size(height, width, 12)
+        );
     }
 
     #[test]

@@ -218,6 +218,7 @@ impl ConversionRunner for LibreOfficeRunner {
             JobSpec::OfficeConvert(spec) => self.office_convert(spec, request, control),
             JobSpec::PdfToOffice(spec) => self.reconstruct(spec, request, control),
             JobSpec::ImageConvert(_)
+            | JobSpec::ImageOptimize(_)
             | JobSpec::PdfMerge(_)
             | JobSpec::PdfSplit(_)
             | JobSpec::PdfCompress(_)

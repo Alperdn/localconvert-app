@@ -355,6 +355,7 @@ impl ConversionRunner for GhostscriptRunner {
             // being handed the job. Being given any of these is a registry
             // wiring mistake, not something to guess at.
             JobSpec::ImageConvert(_)
+            | JobSpec::ImageOptimize(_)
             | JobSpec::PdfWatermark(_)
             | JobSpec::PdfOcr(_)
             | JobSpec::OfficeConvert(_)

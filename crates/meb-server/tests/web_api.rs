@@ -74,6 +74,11 @@ impl TestServer {
         Self::built(|_| {}, None)
     }
 
+    /// Production wiring with a tuned config.
+    fn production_with(tune: impl FnOnce(&mut Config)) -> Self {
+        Self::built(tune, None)
+    }
+
     fn with(tune: impl FnOnce(&mut Config), runner: Arc<dyn ConversionRunner>) -> Self {
         Self::built(tune, Some(runner))
     }
@@ -640,6 +645,14 @@ async fn in_process_pdf_jobs_run_end_to_end_on_the_production_wiring() {
         String::from_utf8_lossy(&uploaded.body)
     );
     let pdf_id = uploaded.json()["file_id"].as_str().unwrap().to_string();
+    // A second copy, because a file is consumed by the job that uses it.
+    let pdf_id_for_watermark = c
+        .upload("Öğrenci Listesi.pdf", real_pdf_bytes())
+        .await
+        .json()["file_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // A document rewrite: the metadata goes, the document stays.
     let created = c
@@ -706,6 +719,36 @@ async fn in_process_pdf_jobs_run_end_to_end_on_the_production_wiring() {
     let text = String::from_utf8(download.body).expect("the download is not UTF-8");
     assert!(text.contains("Ogrenci Listesi"), "{text:?}");
 
+    // A watermark, which is the other kind that draws onto the pages.
+    let created = c
+        .post_json(
+            "/api/v1/jobs",
+            json!({
+                "kind": "pdf_watermark",
+                "file_id": pdf_id_for_watermark,
+                "options": { "text": "GİZLİ", "opacity": 0.2 }
+            }),
+        )
+        .await;
+    assert_eq!(
+        created.status,
+        StatusCode::ACCEPTED,
+        "{}",
+        String::from_utf8_lossy(&created.body)
+    );
+    let job_id = created.json()["job_id"].as_str().unwrap().to_string();
+    let terminal = c.wait_terminal(&job_id).await;
+    assert_eq!(terminal["state"], "completed", "{terminal}");
+    let download = c.get(&format!("/api/v1/jobs/{job_id}/download")).await;
+    assert_eq!(download.status, StatusCode::OK);
+    assert!(download.body.starts_with(b"%PDF-"));
+    // The watermark reached the file, with the Turkish text transliterated
+    // to what a standard PDF font can draw.
+    assert!(
+        contains(&download.body, b"(GIZLI) Tj"),
+        "the downloaded PDF carries no watermark"
+    );
+
     // Only the published output is left in each workspace, as for every
     // other kind.
     for dir in server.job_dirs() {
@@ -714,6 +757,224 @@ async fn in_process_pdf_jobs_run_end_to_end_on_the_production_wiring() {
             "{dir:?} kept its work directory"
         );
     }
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// Image optimization over HTTP, including the two sizes the response
+/// carries so a client can say "saved X%" without remembering what it
+/// uploaded.
+#[tokio::test]
+async fn an_optimization_reports_both_sizes_and_never_grows_the_file() {
+    let server = TestServer::production();
+    let mut c = server.client();
+
+    let original = jpeg_bytes(200, 150);
+    let uploaded = c.upload("Okul Fotoğrafı.jpg", original.clone()).await;
+    assert_eq!(uploaded.status, StatusCode::CREATED);
+    let file_id = uploaded.json()["file_id"].as_str().unwrap().to_string();
+
+    let created = c
+        .post_json(
+            "/api/v1/jobs",
+            json!({
+                "kind": "image_optimize",
+                "file_id": file_id.clone(),
+                "options": { "level": "maximum" }
+            }),
+        )
+        .await;
+    assert_eq!(
+        created.status,
+        StatusCode::ACCEPTED,
+        "{}",
+        String::from_utf8_lossy(&created.body)
+    );
+    // The format is unchanged, which is what distinguishes this from a
+    // conversion.
+    assert_eq!(created.json()["output_format"], "jpg");
+
+    let job_id = created.json()["job_id"].as_str().unwrap().to_string();
+    let terminal = c.wait_terminal(&job_id).await;
+    assert_eq!(terminal["state"], "completed", "{terminal}");
+
+    let result = &terminal["result"];
+    let source_size = result["source_size"].as_u64().unwrap();
+    let size = result["size"].as_u64().unwrap();
+    assert_eq!(
+        source_size,
+        original.len() as u64,
+        "the reported original size is not what was uploaded"
+    );
+    // The promise: never larger. At `maximum` on a default-quality JPEG it
+    // is also genuinely smaller, so the saving is real and not a tie.
+    assert!(size <= source_size, "{size} > {source_size}");
+    assert!(
+        size < source_size,
+        "maximum optimization saved nothing: {size} vs {source_size}"
+    );
+    assert_eq!(result["content_type"], "image/jpeg");
+    assert_eq!(result["output_name"], "Okul Fotoğrafı_kucultuldu.jpg");
+
+    let download = c.get(&format!("/api/v1/jobs/{job_id}/download")).await;
+    assert_eq!(download.status, StatusCode::OK);
+    assert_eq!(download.headers[header::CONTENT_TYPE], "image/jpeg");
+    assert_eq!(download.body.len() as u64, size);
+    assert!(download.body.starts_with(&[0xff, 0xd8]), "not a JPEG");
+
+    // A level this format cannot honestly deliver is refused before a job
+    // exists, not approximated by a different one.
+    let refused = c
+        .post_json(
+            "/api/v1/jobs",
+            json!({
+                "kind": "image_optimize",
+                "file_id": file_id,
+                "options": { "level": "lossless" }
+            }),
+        )
+        .await;
+    assert_eq!(
+        (refused.status, refused.code().as_str()),
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "UNSUPPORTED_CONVERSION"
+        )
+    );
+}
+
+/// A directory that looks like a frontend build: the document, a
+/// hash-named asset, and a file served under its own plain name.
+fn static_build() -> PathBuf {
+    let dir =
+        std::env::temp_dir().join(format!("meb_web_static_{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(dir.join("assets")).unwrap();
+    std::fs::write(dir.join("index.html"), b"<!doctype html><title>MEB</title>").unwrap();
+    std::fs::write(dir.join("assets/app-a1b2c3.js"), b"export const a = 1;").unwrap();
+    std::fs::write(dir.join("favicon.ico"), b"\x00\x00\x01\x00").unwrap();
+    dir
+}
+
+/// The frontend and the API on one origin: what each path gets, and what
+/// it is allowed to be cached for.
+#[tokio::test]
+async fn the_frontend_is_served_under_every_path_the_api_does_not_claim() {
+    let build = static_build();
+    let server = TestServer::production_with(|config| {
+        config.static_dir = Some(build.clone());
+    });
+    let mut c = server.client();
+
+    // The document, at the root and by name. Never cached: it is what
+    // names the hashed assets, so a cached copy would survive a deploy and
+    // ask for files that no longer exist.
+    for path in ["/", "/index.html"] {
+        let r = c.get(path).await;
+        assert_eq!(r.status, StatusCode::OK, "{path}");
+        assert!(
+            r.headers[header::CONTENT_TYPE]
+                .to_str()
+                .unwrap()
+                .starts_with("text/html"),
+            "{path}"
+        );
+        assert!(r.body.starts_with(b"<!doctype html>"), "{path}");
+        let cache = r.headers[header::CACHE_CONTROL].to_str().unwrap();
+        assert!(cache.contains("no-cache"), "{path}: {cache}");
+    }
+
+    // A hash-named asset: cached as long as a browser will cache anything,
+    // because a new build gives it a new name.
+    let asset = c.get("/assets/app-a1b2c3.js").await;
+    assert_eq!(asset.status, StatusCode::OK);
+    assert_eq!(asset.body, b"export const a = 1;");
+    let cache = asset.headers[header::CACHE_CONTROL].to_str().unwrap();
+    assert!(cache.contains("immutable"), "{cache}");
+    assert!(cache.contains("max-age=31536000"), "{cache}");
+
+    // A file whose name carries no hash may change under the same URL, so
+    // it is cached briefly and never immutably.
+    let icon = c.get("/favicon.ico").await;
+    assert_eq!(icon.status, StatusCode::OK);
+    let cache = icon.headers[header::CACHE_CONTROL].to_str().unwrap();
+    assert!(!cache.contains("immutable"), "{cache}");
+    assert!(cache.contains("max-age"), "{cache}");
+
+    // A client-side route the browser asked for directly: the document,
+    // so a deep link works the same as a click.
+    for route in ["/raporlar", "/raporlar/2026/ozet"] {
+        let r = c.get(route).await;
+        assert_eq!(r.status, StatusCode::OK, "{route}");
+        assert!(r.body.starts_with(b"<!doctype html>"), "{route}");
+    }
+
+    // A path that names a FILE which is not there stays a 404. Answering
+    // it with the document would make a stale or mistyped asset URL look
+    // like a script with a syntax error.
+    let missing = c.get("/assets/app-deadbeef.js").await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+    assert!(!missing.body.starts_with(b"<!doctype html>"));
+
+    // The API keeps its own 404, in JSON: an unknown API path is an error,
+    // never a page.
+    let unknown_api = c.get("/api/v1/nope").await;
+    assert_eq!(unknown_api.status, StatusCode::NOT_FOUND);
+    assert_eq!(unknown_api.code(), "NOT_FOUND");
+    assert!(!unknown_api.body.starts_with(b"<!doctype html>"));
+    // And the API itself still works on the same origin.
+    assert_eq!(
+        c.get("/api/v1/capabilities").await.status,
+        StatusCode::OK
+    );
+    let health = c.get("/healthz").await;
+    assert_eq!(health.status, StatusCode::OK);
+    assert_eq!(health.body, b"ok");
+
+    // Nothing outside the configured directory is reachable, whatever the
+    // path says.
+    for escape in [
+        "/../Cargo.toml",
+        "/assets/../../Cargo.toml",
+        "/%2e%2e/Cargo.toml",
+    ] {
+        let r = c.get(escape).await;
+        assert_ne!(r.status, StatusCode::OK, "{escape} was served");
+        assert!(
+            !contains(&r.body, b"[package]"),
+            "{escape} escaped the static directory"
+        );
+    }
+
+    // The security headers apply to the frontend too.
+    let r = c.get("/").await;
+    assert_eq!(r.headers["x-content-type-options"], "nosniff");
+    assert_eq!(r.headers["x-frame-options"], "DENY");
+
+    let _ = std::fs::remove_dir_all(&build);
+}
+
+#[tokio::test]
+async fn without_a_frontend_build_only_the_api_is_served() {
+    // The development setup: Vite serves the frontend and proxies the API
+    // here, so this server has no pages. A non-API path is then a plain
+    // 404 rather than a broken one.
+    let server = TestServer::production_with(|config| {
+        config.static_dir = Some(std::env::temp_dir().join("meb_no_such_build_dir"));
+    });
+    let mut c = server.client();
+    assert_eq!(c.get("/").await.status, StatusCode::NOT_FOUND);
+    assert_eq!(c.get("/raporlar").await.status, StatusCode::NOT_FOUND);
+    // The API is unaffected.
+    assert_eq!(c.get("/healthz").await.status, StatusCode::OK);
+    assert_eq!(c.get("/api/v1/capabilities").await.status, StatusCode::OK);
+
+    // Explicitly disabled is the same answer.
+    let disabled = TestServer::production_with(|config| config.static_dir = None);
+    let mut c = disabled.client();
+    assert_eq!(c.get("/").await.status, StatusCode::NOT_FOUND);
+    assert_eq!(c.get("/healthz").await.status, StatusCode::OK);
 }
 
 /// A kind the API publishes but has no engine for is refused before any
@@ -730,9 +991,9 @@ async fn kinds_without_an_engine_are_refused_before_any_work() {
     // Which kinds those are depends on what is installed here, so the
     // list is taken from what the server itself publishes: a kind absent
     // from /capabilities must be refused, whatever the reason it is
-    // absent. `pdf_watermark` has no engine in the code at all, so it is
-    // always in that set - which is what makes this test meaningful on a
-    // machine that does have every tool installed.
+    // absent. On a machine with every external tool installed none of the
+    // candidates below is refused and the loop is vacuous - the unknown
+    // kind at the end is what still holds there.
     let published = c.get("/api/v1/capabilities").await.json();
     let wired: Vec<String> = published["kinds"]
         .as_array()
@@ -740,10 +1001,8 @@ async fn kinds_without_an_engine_are_refused_before_any_work() {
         .iter()
         .map(|k| k.as_str().unwrap().to_string())
         .collect();
-    assert!(!wired.contains(&"pdf_watermark".to_string()));
 
     let candidates = [
-        json!({ "kind": "pdf_watermark", "file_id": pdf_id.clone(), "options": { "text": "Gizli" } }),
         json!({ "kind": "pdf_merge", "file_ids": [pdf_id.clone(), pdf_id.clone()] }),
         json!({ "kind": "pdf_compress", "file_id": pdf_id.clone() }),
         json!({ "kind": "pdf_rotate", "file_id": pdf_id.clone(), "options": { "rotation": "90" } }),
@@ -1207,6 +1466,8 @@ async fn jpeg_to_png_conversion_end_to_end() {
         // conditional on anything: they are AVAILABLE on every machine,
         // and that is the whole point of their being separate kinds.
         for id in [
+            "image_optimization",
+            "pdf_watermark",
             "pdf_protection",
             "pdf_page_management",
             "pdf_metadata_removal",
@@ -1215,6 +1476,8 @@ async fn jpeg_to_png_conversion_end_to_end() {
             assert_eq!(state_of(id), "AVAILABLE", "{id}");
         }
         for kind in [
+            "image_optimize",
+            "pdf_watermark",
             "pdf_protect",
             "pdf_unlock",
             "pdf_metadata_strip",
@@ -1225,6 +1488,22 @@ async fn jpeg_to_png_conversion_end_to_end() {
         ] {
             assert!(kinds.contains(&kind), "{kind} is not executable");
         }
+        // The optimization matrix is published with them, and only
+        // contains formats that really can be optimized.
+        let optimizations = caps["formats"]["image"]["optimizations"]
+            .as_object()
+            .unwrap();
+        assert_eq!(
+            optimizations["jpg"].as_array().unwrap().len(),
+            2,
+            "a JPEG has two lossy levels: {optimizations:?}"
+        );
+        assert_eq!(optimizations["png"], json!(["lossless"]));
+        assert!(
+            !optimizations.contains_key("bmp") && !optimizations.contains_key("gif"),
+            "a format that cannot be optimized is advertised: {optimizations:?}"
+        );
+
         // The text output a PDF job can have is advertised with them.
         let pdf_outputs = caps["formats"]["pdf"]["outputs"].as_array().unwrap();
         assert!(
@@ -1252,13 +1531,19 @@ async fn jpeg_to_png_conversion_end_to_end() {
             let expected = if wired { "AVAILABLE" } else { "NOT_IMPLEMENTED" };
             assert_eq!(state_of(id), expected, "{id} (kinds: {kinds:?})");
         }
-        // The watermark is the one PDF operation with no engine at all in
-        // the code, so nothing can wire it on any machine - and
-        // `pdf_structural_ops` therefore cannot be available either. OCR is
-        // implemented, so whether it is wired is a fact about this machine
-        // and is covered by the derivation above, not asserted here.
-        assert!(!kinds.contains(&"pdf_watermark"));
-        assert_eq!(state_of("pdf_structural_ops"), "NOT_IMPLEMENTED");
+        // Every kind this API publishes now has an engine, so nothing is
+        // unconditionally absent any more: what is wired depends only on
+        // what is installed, which the derivation above covers. The
+        // remaining invariant is that a kind is executable if and only if
+        // its capability is available.
+        for (id, needed) in published {
+            let wired = needed.iter().all(|k| kinds.contains(k));
+            assert_eq!(
+                state_of(id) == "AVAILABLE",
+                wired,
+                "{id} disagrees with its kinds {needed:?}"
+            );
+        }
 
         // Advertised formats follow the same rule.
         let office_outputs = caps["formats"]["office"]["outputs"].as_array().unwrap();

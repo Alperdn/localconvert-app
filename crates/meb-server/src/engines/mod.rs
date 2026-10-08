@@ -18,11 +18,13 @@
 //! jobs that could only ever fail.
 
 pub mod ghostscript;
+pub mod image_optimize;
 pub mod libreoffice;
 pub mod lopdf_ops;
 pub mod tesseract;
 
 pub use ghostscript::GhostscriptRunner;
+pub use image_optimize::ImageOptimizeRunner;
 pub use libreoffice::LibreOfficeRunner;
 pub use lopdf_ops::LopdfRunner;
 pub use tesseract::TesseractRunner;

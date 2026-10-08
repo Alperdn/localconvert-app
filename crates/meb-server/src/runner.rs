@@ -133,7 +133,12 @@ impl RunnerRegistry {
     /// the create-job handler refuses it with `UNSUPPORTED_CONVERSION`
     /// instead of accepting jobs that could only ever fail.
     pub fn production() -> Self {
-        let registry = Self::new().with(JobKind::ImageConvert, Arc::new(NativeImageRunner));
+        let registry = Self::new()
+            .with(JobKind::ImageConvert, Arc::new(NativeImageRunner))
+            .with_all(
+                &crate::engines::ImageOptimizeRunner::KINDS,
+                Arc::new(crate::engines::ImageOptimizeRunner),
+            );
         // The pure-Rust PDF operations are registered UNCONDITIONALLY:
         // they spawn nothing, so there is no tool to probe and no machine
         // on which they could be missing. Gating them would be pretending
@@ -307,14 +312,34 @@ mod tests {
     /// *wired* depends on that tool being installed. Moving a kind off this
     /// list means implementing its runner and registering it in
     /// `production()` in the same change.
-    const AWAITING_AN_ENGINE: [JobKind; 1] = [JobKind::PdfWatermark];
+    const AWAITING_AN_ENGINE: [JobKind; 0] = [];
 
     /// Kinds executed in this process, with no external tool at all. They
     /// are always wired, on every machine.
     fn in_process() -> Vec<JobKind> {
         let mut kinds = vec![JobKind::ImageConvert];
+        kinds.extend(crate::engines::ImageOptimizeRunner::KINDS);
         kinds.extend(crate::engines::LopdfRunner::KINDS);
         kinds
+    }
+
+    /// Every kind now has an engine. The list above is empty, and this is
+    /// what keeps it honest: a NEW kind added to the API without a runner
+    /// has to be put there deliberately, with the reason, rather than
+    /// quietly becoming a kind that parses and can never run.
+    #[test]
+    fn no_published_kind_is_left_without_an_engine() {
+        let engines = external_engines();
+        for kind in JobKind::ALL {
+            let owned = in_process().contains(&kind)
+                || engines.iter().any(|(kinds, _)| kinds.contains(&kind));
+            assert_eq!(
+                owned,
+                !AWAITING_AN_ENGINE.contains(&kind),
+                "{} is not backed by any engine",
+                kind.wire()
+            );
+        }
     }
 
     /// The external engines `production()` wires, each with whether it

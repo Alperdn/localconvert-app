@@ -252,6 +252,7 @@ impl ConversionRunner for TesseractRunner {
         match request.spec {
             JobSpec::PdfOcr(options) => self.ocr(options, request, control),
             JobSpec::ImageConvert(_)
+            | JobSpec::ImageOptimize(_)
             | JobSpec::PdfMerge(_)
             | JobSpec::PdfSplit(_)
             | JobSpec::PdfCompress(_)

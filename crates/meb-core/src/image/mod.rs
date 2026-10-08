@@ -45,6 +45,18 @@ pub enum NativeImageFormat {
 }
 
 impl NativeImageFormat {
+    /// Every format the native pipeline handles, in a stable order.
+    /// Callers that publish or validate a per-format matrix iterate this
+    /// rather than restating the list (see `meb_server::spec`).
+    pub const ALL: [NativeImageFormat; 6] = [
+        Self::Jpeg,
+        Self::Png,
+        Self::WebP,
+        Self::Bmp,
+        Self::Gif,
+        Self::Tiff,
+    ];
+
     pub fn from_extension(ext: &str) -> Option<Self> {
         match ext.to_lowercase().as_str() {
             "jpg" | "jpeg" => Some(Self::Jpeg),
@@ -96,6 +108,25 @@ impl NativeImageFormat {
             image::ImageFormat::Gif => Some(Self::Gif),
             image::ImageFormat::Tiff => Some(Self::Tiff),
             _ => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod format_list_tests {
+    use super::NativeImageFormat;
+
+    #[test]
+    fn every_format_is_listed_once_and_round_trips_its_extension() {
+        let mut seen = NativeImageFormat::ALL.to_vec();
+        let count = seen.len();
+        seen.dedup();
+        assert_eq!(seen.len(), count, "a format is listed twice");
+        for format in NativeImageFormat::ALL {
+            assert_eq!(
+                NativeImageFormat::from_extension(format.canonical_extension()),
+                Some(format)
+            );
         }
     }
 }

@@ -20,6 +20,7 @@ use axum::extract::State;
 use axum::Json;
 use meb_core::capabilities::{capability, native_image_capabilities, CapabilityState};
 use meb_core::format::{OfficeFormat, SourceFormat};
+use meb_core::image::NativeImageFormat;
 use serde_json::{json, Value};
 
 /// Which job kinds each capability id needs. A capability with an empty list
@@ -30,6 +31,7 @@ use serde_json::{json, Value};
 const CAPABILITY_KINDS: &[(&str, &[JobKind])] = &[
     ("image_conversion", &[JobKind::ImageConvert]),
     ("image_resize", &[JobKind::ImageConvert]),
+    ("image_optimization", &[JobKind::ImageOptimize]),
     // Crop and rotate are native-pipeline operations with no job kind yet.
     ("image_crop", &[]),
     ("image_rotate", &[]),
@@ -40,9 +42,13 @@ const CAPABILITY_KINDS: &[(&str, &[JobKind])] = &[
             JobKind::PdfSplit,
             JobKind::PdfCompress,
             JobKind::PdfRotate,
-            JobKind::PdfWatermark,
         ],
     ),
+    // Its own id, not part of the group above: watermarking is done in
+    // this process and is always available, while the four operations
+    // above all need Ghostscript. Reporting them together would mean
+    // calling watermarking unavailable on a server that can do it.
+    ("pdf_watermark", &[JobKind::PdfWatermark]),
     // The operations that need no external engine at all (lopdf). Grouped
     // by what a user is doing, not by which library does it - and each
     // group holds only kinds that are actually implemented, so a group
@@ -102,6 +108,27 @@ pub async fn get_capabilities(State(state): State<AppState>, _owner: Owner) -> J
         .filter(|k| state.runners.supports(*k))
         .map(JobKind::wire)
         .collect();
+
+    // Which levels each image format can actually be optimized at, from
+    // the same definition `JobSpec::from_request` validates against. A
+    // format with no levels is absent, so a client never offers one that
+    // would be refused.
+    let image_optimizations: Value = if state.runners.supports(JobKind::ImageOptimize) {
+        NativeImageFormat::ALL
+            .into_iter()
+            .filter_map(|format| {
+                let levels: Vec<&str> = crate::spec::image_optimization_levels(format)
+                    .into_iter()
+                    .map(crate::spec::OptimizeLevel::wire)
+                    .collect();
+                (!levels.is_empty())
+                    .then(|| (format.canonical_extension().to_string(), json!(levels)))
+            })
+            .collect::<serde_json::Map<String, Value>>()
+            .into()
+    } else {
+        json!({})
+    };
 
     let office_formats: Vec<&str> = OfficeFormat::ALL
         .into_iter()
@@ -171,6 +198,9 @@ pub async fn get_capabilities(State(state): State<AppState>, _owner: Owner) -> J
             "image": {
                 "inputs": ["jpg", "jpeg", "png", "webp", "bmp", "gif", "tif", "tiff"],
                 "outputs": ["jpg", "png", "webp", "bmp", "gif", "tiff"],
+                // Same format in and out, at the levels the format's
+                // encoder can honestly deliver.
+                "optimizations": image_optimizations,
             },
             // Office files can be UPLOADED whatever the engine situation is
             // (that is an upload-admission question); what they can be
@@ -201,7 +231,11 @@ pub async fn get_capabilities(State(state): State<AppState>, _owner: Owner) -> J
 /// does not describe (the document engines).
 fn available_message(id: &str) -> &'static str {
     match id {
-        "pdf_structural_ops" => "Merge, split, compress, rotate and watermark PDF files.",
+        "pdf_structural_ops" => "Merge, split, compress and rotate PDF files.",
+        "pdf_watermark" => "Draw a text watermark across every page of a PDF file.",
+        "image_optimization" => {
+            "Make an image file smaller without changing its format."
+        }
         "pdf_protection" => "Add a password to a PDF file, or remove one.",
         "pdf_page_management" => "Delete pages, re-order pages and add page numbers.",
         "pdf_metadata_removal" => "Remove a PDF file's title, author and other metadata.",
@@ -265,7 +299,8 @@ mod tests {
                 .collect()
         };
 
-        // Production today: the in-process image pipeline only.
+        // With only the native image conversion wired, exactly the two
+        // ids that need it are available.
         let image_only = describe(&|k| k == JobKind::ImageConvert);
         for (id, available) in &image_only {
             let expected = matches!(*id, "image_conversion" | "image_resize");
@@ -283,6 +318,41 @@ mod tests {
             .iter()
             .any(|(id, a)| *id == "archive_operations" && !*a));
         assert!(all_wired.iter().any(|(id, a)| *id == "image_crop" && !*a));
+
+        // The ids backed only by in-process engines are available on any
+        // machine, because nothing about them depends on a tool being
+        // installed. Watermarking is deliberately one of them, and
+        // deliberately NOT part of `pdf_structural_ops`, whose four
+        // operations all need Ghostscript.
+        let in_process = [
+            JobKind::ImageConvert,
+            JobKind::ImageOptimize,
+            JobKind::PdfWatermark,
+            JobKind::PdfProtect,
+            JobKind::PdfUnlock,
+            JobKind::PdfMetadataStrip,
+            JobKind::PdfPageNumbers,
+            JobKind::PdfDeletePages,
+            JobKind::PdfReorderPages,
+            JobKind::PdfExtractText,
+        ];
+        let without_tools = describe(&|k| in_process.contains(&k));
+        for id in [
+            "image_optimization",
+            "pdf_watermark",
+            "pdf_protection",
+            "pdf_page_management",
+            "pdf_metadata_removal",
+            "pdf_text_extraction",
+        ] {
+            assert!(
+                without_tools.iter().any(|(each, a)| *each == id && *a),
+                "{id} depends on an external tool it should not need"
+            );
+        }
+        assert!(without_tools
+            .iter()
+            .any(|(id, a)| *id == "pdf_structural_ops" && !*a));
     }
 
     #[test]

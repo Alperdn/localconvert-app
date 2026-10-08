@@ -47,9 +47,17 @@ pub const MAX_INPUTS: usize = 50;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum JobKind {
     /// Raster image conversion/resize/recompression by the in-process
-    /// native pipeline. Covers image optimization: same format in and out,
-    /// with a quality (and optionally a size) that shrinks the file.
+    /// native pipeline.
     ImageConvert,
+    /// One image re-encoded in the SAME format, smaller.
+    ///
+    /// A kind of its own rather than a `convert` to the same format: the
+    /// client asks for an outcome ("make this smaller, this much quality
+    /// loss is acceptable") instead of naming encoder settings, the result
+    /// is guaranteed never to be larger than the input, and the levels a
+    /// format actually supports depend on what its encoder can do (see
+    /// `image_optimization_levels`).
+    ImageOptimize,
     /// Several PDFs into one, in the order given.
     PdfMerge,
     /// Selected pages out of one PDF, delivered as a ZIP of single pages.
@@ -96,8 +104,9 @@ pub enum JobKind {
 }
 
 impl JobKind {
-    pub const ALL: [JobKind; 16] = [
+    pub const ALL: [JobKind; 17] = [
         JobKind::ImageConvert,
+        JobKind::ImageOptimize,
         JobKind::PdfMerge,
         JobKind::PdfSplit,
         JobKind::PdfCompress,
@@ -121,6 +130,7 @@ impl JobKind {
             // Historical name of the image-conversion kind; kept so the
             // existing frontend keeps working.
             JobKind::ImageConvert => "convert",
+            JobKind::ImageOptimize => "image_optimize",
             JobKind::PdfMerge => "pdf_merge",
             JobKind::PdfSplit => "pdf_split",
             JobKind::PdfCompress => "pdf_compress",
@@ -149,6 +159,7 @@ impl JobKind {
         match self {
             JobKind::PdfToOffice => true,
             JobKind::ImageConvert
+            | JobKind::ImageOptimize
             | JobKind::PdfMerge
             | JobKind::PdfSplit
             | JobKind::PdfCompress
@@ -174,6 +185,7 @@ impl JobKind {
         match self {
             JobKind::PdfMerge => Arity::OneOrMore,
             JobKind::ImageConvert
+            | JobKind::ImageOptimize
             | JobKind::PdfSplit
             | JobKind::PdfCompress
             | JobKind::PdfRotate
@@ -214,6 +226,86 @@ pub struct ImageConvertSpec {
     pub source_format: NativeImageFormat,
     pub target: NativeImageFormat,
     pub options: ImageConvertOptions,
+}
+
+/// How much quality loss an optimization may spend to make a file smaller.
+///
+/// A closed set of OUTCOMES, not of encoder settings: what each one means
+/// for a given format is this server's decision (`engines::image_optimize`),
+/// so a client can never reach an encoder parameter directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OptimizeLevel {
+    /// Every pixel preserved; only the encoding is made more compact.
+    Lossless,
+    /// Moderate, generally invisible quality loss.
+    Balanced,
+    /// Aggressive: visibly lossy on detailed images, much smaller.
+    Maximum,
+}
+
+impl OptimizeLevel {
+    pub const ALL: [OptimizeLevel; 3] = [
+        OptimizeLevel::Lossless,
+        OptimizeLevel::Balanced,
+        OptimizeLevel::Maximum,
+    ];
+
+    pub fn wire(self) -> &'static str {
+        match self {
+            OptimizeLevel::Lossless => "lossless",
+            OptimizeLevel::Balanced => "balanced",
+            OptimizeLevel::Maximum => "maximum",
+        }
+    }
+}
+
+/// The levels this server can HONESTLY deliver for a format, which is a
+/// property of the encoder behind it:
+///
+/// - JPEG is lossy by construction. There is no lossless re-encode of one
+///   (a decode/encode round trip always loses), so it offers the two lossy
+///   levels and not `lossless`.
+/// - PNG and WebP are encoded losslessly by the pure-Rust pipeline - PNG at
+///   maximum deflate effort with adaptive filtering, WebP by the lossless
+///   WebP encoder. Neither has a quality knob here: lossy PNG needs colour
+///   quantization and lossy WebP needs libwebp, and neither is in this
+///   dependency tree, so those levels are REFUSED rather than silently
+///   served as a lossless re-encode the user did not ask for.
+/// - BMP, GIF and TIFF are not offered at all. The BMP encoder is
+///   uncompressed (nothing to optimize) and drops alpha; the GIF encoder
+///   re-quantizes to 256 colours, so its "lossless" level would not be
+///   lossless; the TIFF encoder writes uncompressed. An operation that
+///   cannot shrink the file, or that would quietly lose data, is not
+///   offered.
+///
+/// The ONE definition of the matrix: `JobSpec::from_request` validates
+/// against it and `GET /capabilities` publishes it, so what the API accepts
+/// and what it advertises cannot drift apart.
+pub fn image_optimization_levels(format: NativeImageFormat) -> Vec<OptimizeLevel> {
+    match format {
+        NativeImageFormat::Jpeg => vec![OptimizeLevel::Balanced, OptimizeLevel::Maximum],
+        NativeImageFormat::Png | NativeImageFormat::WebP => vec![OptimizeLevel::Lossless],
+        NativeImageFormat::Bmp | NativeImageFormat::Gif | NativeImageFormat::Tiff => Vec::new(),
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageOptimizeOptions {
+    /// Required: an optimization job must say how much quality it is
+    /// willing to lose. There is no safe default - `lossless` is wrong for
+    /// a JPEG (it cannot have one) and `maximum` is wrong for anything the
+    /// user did not explicitly agree to degrade.
+    pub level: OptimizeLevel,
+}
+
+#[derive(Debug, Clone)]
+pub struct ImageOptimizeSpec {
+    /// The format of the input, which is also the format of the output: an
+    /// optimization never changes the format (that is `convert`).
+    pub format: NativeImageFormat,
+    pub level: OptimizeLevel,
 }
 
 /// Highest page number any PDF operation will address. Bounds both the work
@@ -505,6 +597,7 @@ const DEFAULT_WATERMARK_OPACITY: f32 = 0.3;
 #[derive(Debug, Clone)]
 pub enum JobSpec {
     ImageConvert(ImageConvertSpec),
+    ImageOptimize(ImageOptimizeSpec),
     PdfMerge(PdfMergeSpec),
     PdfSplit(PdfSplitSpec),
     PdfCompress(PdfCompressOptions),
@@ -598,6 +691,27 @@ impl JobSpec {
                     source_format,
                     target,
                     options,
+                }))
+            }
+            JobKind::ImageOptimize => {
+                let format = sources
+                    .first()
+                    .and_then(|s| s.image())
+                    .ok_or_else(ApiError::unsupported_conversion)?;
+                // The output format is the input format; naming one would
+                // be a different operation (`convert`), not a hint.
+                reject_output_format(request)?;
+                let options: ImageOptimizeOptions = require_options(request.options.as_ref())?;
+                // The matrix is the single definition in
+                // `image_optimization_levels`: a format/level pair this
+                // server cannot honestly deliver is refused here rather
+                // than approximated by a different one.
+                if !image_optimization_levels(format).contains(&options.level) {
+                    return Err(ApiError::unsupported_conversion());
+                }
+                Ok(JobSpec::ImageOptimize(ImageOptimizeSpec {
+                    format,
+                    level: options.level,
                 }))
             }
             JobKind::PdfMerge => {
@@ -757,6 +871,7 @@ impl JobSpec {
     pub fn kind(&self) -> JobKind {
         match self {
             JobSpec::ImageConvert(_) => JobKind::ImageConvert,
+            JobSpec::ImageOptimize(_) => JobKind::ImageOptimize,
             JobSpec::PdfMerge(_) => JobKind::PdfMerge,
             JobSpec::PdfSplit(_) => JobKind::PdfSplit,
             JobSpec::PdfCompress(_) => JobKind::PdfCompress,
@@ -783,6 +898,7 @@ impl JobSpec {
     pub fn output_extension(&self) -> &'static str {
         match self {
             JobSpec::ImageConvert(s) => s.target.canonical_extension(),
+            JobSpec::ImageOptimize(s) => s.format.canonical_extension(),
             JobSpec::PdfSplit(_) => "zip",
             JobSpec::PdfExtractText => "txt",
             JobSpec::PdfMerge(_)
@@ -804,6 +920,7 @@ impl JobSpec {
     pub fn output_mime(&self) -> &'static str {
         match self {
             JobSpec::ImageConvert(s) => s.target.mime_type(),
+            JobSpec::ImageOptimize(s) => s.format.mime_type(),
             JobSpec::PdfSplit(_) => "application/zip",
             JobSpec::PdfExtractText => "text/plain; charset=utf-8",
             JobSpec::PdfMerge(_)
@@ -832,6 +949,9 @@ impl JobSpec {
         let suffix = match self {
             JobSpec::ImageConvert(s) if s.source_format == s.target => Some("donusturuldu"),
             JobSpec::ImageConvert(_) => None,
+            // Always suffixed: the format is unchanged, so the result
+            // would otherwise be indistinguishable from the original.
+            JobSpec::ImageOptimize(_) => Some("kucultuldu"),
             JobSpec::PdfMerge(_) => Some("birlestirildi"),
             JobSpec::PdfSplit(_) => Some("sayfalar"),
             JobSpec::PdfCompress(_) => Some("sikistirildi"),
@@ -873,6 +993,14 @@ impl JobSpec {
                     Ok(())
                 } else {
                     Err("content is not the requested image format")
+                }
+            }
+            JobSpec::ImageOptimize(s) => {
+                let head = head_of(path, OUTPUT_HEAD_BYTES);
+                if meb_core::image::sniff_format(&head) == Some(s.format) {
+                    Ok(())
+                } else {
+                    Err("the optimized file is not an image of the original format")
                 }
             }
             JobSpec::PdfMerge(_)
@@ -1934,6 +2062,138 @@ mod tests {
         std::fs::write(&produced, [0xff, 0xfe, 0x00]).unwrap();
         assert!(spec.validate_output(&produced).is_err());
         assert!(spec.validate_output(&dir.join("absent.txt")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_optimization_accepts_only_the_levels_its_format_can_deliver() {
+        let optimize = |format: NativeImageFormat, options: serde_json::Value| {
+            spec_of(
+                JobKind::ImageOptimize,
+                &[SourceFormat::Image(format)],
+                None,
+                options,
+            )
+        };
+        let level = |name: &str| serde_json::json!({ "level": name });
+
+        // JPEG is lossy by construction: the two lossy levels, and no
+        // `lossless` - a decode/encode round trip of a JPEG always loses,
+        // so offering it would be a lie.
+        assert!(optimize(NativeImageFormat::Jpeg, level("balanced")).is_ok());
+        assert!(optimize(NativeImageFormat::Jpeg, level("maximum")).is_ok());
+        assert_eq!(
+            optimize(NativeImageFormat::Jpeg, level("lossless"))
+                .err()
+                .map(|e| e.code),
+            Some("UNSUPPORTED_CONVERSION")
+        );
+
+        // PNG and WebP are the other way round: a real lossless re-encode,
+        // and no lossy level, because neither a colour quantizer nor a
+        // lossy WebP encoder is in this dependency tree.
+        for format in [NativeImageFormat::Png, NativeImageFormat::WebP] {
+            assert!(optimize(format, level("lossless")).is_ok(), "{format:?}");
+            for refused in ["balanced", "maximum"] {
+                assert_eq!(
+                    optimize(format, level(refused)).err().map(|e| e.code),
+                    Some("UNSUPPORTED_CONVERSION"),
+                    "{format:?} accepted {refused}"
+                );
+            }
+        }
+
+        // Formats that cannot be optimized at all are refused outright
+        // rather than accepted and returned unchanged.
+        for format in [
+            NativeImageFormat::Bmp,
+            NativeImageFormat::Gif,
+            NativeImageFormat::Tiff,
+        ] {
+            assert!(image_optimization_levels(format).is_empty(), "{format:?}");
+            for each in OptimizeLevel::ALL {
+                assert_eq!(
+                    optimize(format, level(each.wire())).err().map(|e| e.code),
+                    Some("UNSUPPORTED_CONVERSION"),
+                    "{format:?} accepted {}",
+                    each.wire()
+                );
+            }
+        }
+
+        // The level is required: there is no level that is right for every
+        // format, so there is no default to fall back on.
+        assert_eq!(
+            optimize(NativeImageFormat::Jpeg, serde_json::Value::Null)
+                .err()
+                .map(|e| e.code),
+            Some("INVALID_REQUEST")
+        );
+        for bad in [
+            serde_json::json!({ "level": "lowest" }),
+            serde_json::json!({ "level": 80 }),
+            serde_json::json!({ "quality": 80 }),
+            // Not an encoder parameter smuggled in beside the level.
+            serde_json::json!({ "level": "balanced", "quality": 10 }),
+        ] {
+            assert_eq!(
+                optimize(NativeImageFormat::Jpeg, bad.clone())
+                    .err()
+                    .map(|e| e.code),
+                Some("INVALID_REQUEST"),
+                "accepted {bad}"
+            );
+        }
+
+        // An optimization keeps the format, so naming an output format is
+        // a contradiction - that request is a `convert`.
+        assert_eq!(
+            spec_of(
+                JobKind::ImageOptimize,
+                &[SourceFormat::Image(NativeImageFormat::Jpeg)],
+                Some("png"),
+                level("balanced"),
+            )
+            .err()
+            .map(|e| e.code),
+            Some("INVALID_REQUEST")
+        );
+        // And it works on images only.
+        assert_eq!(
+            spec_of(JobKind::ImageOptimize, &[PDF], None, level("balanced"))
+                .err()
+                .map(|e| e.code),
+            Some("UNSUPPORTED_CONVERSION")
+        );
+    }
+
+    #[test]
+    fn an_optimized_file_keeps_its_format_and_says_so_in_its_name() {
+        let spec = spec_of(
+            JobKind::ImageOptimize,
+            &[SourceFormat::Image(NativeImageFormat::Jpeg)],
+            None,
+            serde_json::json!({ "level": "maximum" }),
+        )
+        .unwrap();
+        assert_eq!(spec.output_extension(), "jpg");
+        assert_eq!(spec.output_mime(), "image/jpeg");
+        // Always suffixed: the format is unchanged, so an unsuffixed name
+        // would be indistinguishable from the original.
+        assert_eq!(spec.output_name("foto"), "foto_kucultuldu.jpg");
+
+        let dir = std::env::temp_dir().join(format!(
+            "meb_spec_optimize_{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let produced = dir.join("result.jpg");
+        // A produced file of a different format is never published, even
+        // though it is a valid image.
+        std::fs::write(&produced, b"\x89PNG\r\n\x1a\n").unwrap();
+        assert!(spec.validate_output(&produced).is_err());
+        std::fs::write(&produced, [0xff, 0xd8, 0xff, 0xe0]).unwrap();
+        assert!(spec.validate_output(&produced).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

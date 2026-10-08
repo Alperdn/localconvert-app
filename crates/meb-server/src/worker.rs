@@ -161,6 +161,14 @@ fn execute(
         spec: &job.spec,
     };
 
+    // Measured BEFORE the engine runs, while the inputs are certainly
+    // still staged: the inputs of a job are deleted as soon as it ends.
+    let source_size: u64 = inputs
+        .iter()
+        .filter_map(|p| std::fs::metadata(p).ok())
+        .map(|m| m.len())
+        .sum();
+
     let result = catch_unwind(AssertUnwindSafe(|| runner.run(&request, &control)));
     match result {
         Err(_) => {
@@ -180,12 +188,12 @@ fn execute(
             if job.is_cancel_requested() {
                 return Outcome::Cancelled;
             }
-            publish_output(job, &output, max_output)
+            publish_output(job, &output, max_output, source_size)
         }
     }
 }
 
-fn publish_output(job: &Job, produced: &Path, max_output: u64) -> Outcome {
+fn publish_output(job: &Job, produced: &Path, max_output: u64, source_size: u64) -> Outcome {
     let invalid = |why: &str| {
         tracing::warn!(job_id = %job.id, reason = why, "output rejected");
         Outcome::Failed {
@@ -209,7 +217,7 @@ fn publish_output(job: &Job, produced: &Path, max_output: u64) -> Outcome {
     if std::fs::rename(produced, &destination).is_err() {
         return invalid("could not publish");
     }
-    Outcome::Completed { size }
+    Outcome::Completed { size, source_size }
 }
 
 /// Post-terminal cleanup. Inputs and intermediates never outlive a job;

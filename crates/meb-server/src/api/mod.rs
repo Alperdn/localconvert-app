@@ -1,10 +1,16 @@
 //! HTTP routes. Handlers translate HTTP <-> registry/storage/worker calls;
 //! they never build filesystem paths from request data and never contain
 //! engine code.
+//!
+//! Two things are served: the API under `/api/v1`, and - when a build of
+//! the frontend is there - that build under everything else. The order is
+//! what makes it safe: the API is matched first and has its own 404, so an
+//! unknown API path is a JSON error and never a page.
 
 mod capabilities;
 mod files;
 mod jobs;
+mod static_files;
 
 use crate::error::ApiError;
 use crate::session::session_middleware;
@@ -14,7 +20,7 @@ use axum::http::header::{CACHE_CONTROL, REFERRER_POLICY, X_CONTENT_TYPE_OPTIONS,
 use axum::http::HeaderValue;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use axum::Router;
 
 pub fn router(state: AppState) -> Router {
@@ -38,10 +44,31 @@ pub fn router(state: AppState) -> Router {
             session_middleware,
         ));
 
-    Router::new()
+    let mut app = Router::new()
         .nest("/api/v1", api)
-        .route("/healthz", get(|| async { "ok" }))
-        .layer(middleware::from_fn(security_headers))
+        .route("/healthz", get(|| async { "ok" }));
+
+    // The built frontend, under every path the API did not claim. Mounted
+    // only when there really is a build to serve: otherwise a non-API
+    // path is a plain 404, which is the honest answer for a server running
+    // with no frontend (the development setup, where Vite serves it and
+    // proxies `/api` here).
+    match static_files::root(&state.config) {
+        Some(root) => {
+            tracing::info!(dir = %root.display(), "serving the frontend");
+            app = app.fallback(any(static_files::serve));
+        }
+        None => {
+            if let Some(configured) = state.config.static_dir.as_deref() {
+                tracing::warn!(
+                    dir = %configured.display(),
+                    "static directory does not exist: serving the API only"
+                );
+            }
+        }
+    }
+
+    app.layer(middleware::from_fn(security_headers))
         .with_state(state)
 }
 

@@ -54,7 +54,14 @@ pub struct JobErrorBody {
 pub struct JobResultInfo {
     /// Suggested download name (display only).
     pub output_name: String,
+    /// Size of the produced output, in bytes.
     pub size: u64,
+    /// Total size of the job's inputs, in bytes - the "before" to `size`'s
+    /// "after". Reported for every kind, because every kind changes the
+    /// size of what it was given; it is what an optimization job's
+    /// "saved X%" is computed from (`size` vs `source_size`), without the
+    /// client having to remember what it uploaded.
+    pub source_size: u64,
     pub content_type: &'static str,
 }
 
@@ -104,7 +111,7 @@ pub struct Job {
 }
 
 pub enum Outcome {
-    Completed { size: u64 },
+    Completed { size: u64, source_size: u64 },
     Failed { code: &'static str },
     Cancelled,
 }
@@ -248,12 +255,13 @@ impl Job {
         let content_type = self.spec.output_mime();
         self.update(|s| {
             match outcome {
-                Outcome::Completed { size } => {
+                Outcome::Completed { size, source_size } => {
                     s.state = JobState::Completed;
                     s.progress_pct = Some(100);
                     s.result = Some(JobResultInfo {
                         output_name,
                         size,
+                        source_size,
                         content_type,
                     });
                 }

@@ -3,10 +3,15 @@
 //! ```text
 //! cargo run --manifest-path crates/meb-server/Cargo.toml
 //! ```
-//! Environment: `MEB_BIND` (loopback only, default 127.0.0.1:8787),
+//! Environment: `MEB_BIND` (default 127.0.0.1:8787; any interface may be
+//! given explicitly - see the warnings it prints), `MEB_STATIC_DIR` (the
+//! built frontend to serve, default `./dist/web`, empty to serve none),
 //! `MEB_DATA_ROOT`, `MEB_MAX_UPLOAD_MB`, `MEB_SECURE_COOKIE`, `RUST_LOG`.
-//! The frontend runs with `npm run dev:web`; Vite proxies `/api` here so the
-//! browser sees a single origin.
+//!
+//! In development the frontend runs with `npm run dev:web` and Vite
+//! proxies `/api` here, so the browser sees a single origin and this
+//! server has no frontend to serve. In a deployment the build is in
+//! `MEB_STATIC_DIR` and this server is that single origin itself.
 
 use meb_server::{janitor, App, Config};
 
@@ -26,6 +31,11 @@ async fn main() {
             std::process::exit(2);
         }
     };
+    // Said once, before anything is served: what this configuration does
+    // NOT provide.
+    for warning in config.warnings() {
+        tracing::warn!("{warning}");
+    }
     let bind = config.bind;
 
     let app = match App::new(config) {
@@ -45,7 +55,7 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    tracing::info!(%bind, "meb-server listening (development mode, no authentication)");
+    tracing::info!(%bind, "meb-server listening (no authentication of its own)");
 
     let served = axum::serve(listener, app.router())
         .with_graceful_shutdown(async {

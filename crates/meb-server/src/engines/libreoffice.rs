@@ -223,7 +223,15 @@ impl ConversionRunner for LibreOfficeRunner {
             | JobSpec::PdfCompress(_)
             | JobSpec::PdfRotate(_)
             | JobSpec::PdfWatermark(_)
-            | JobSpec::PdfOcr(_) => Err(RunError::wrong_kind("LibreOfficeRunner")),
+            | JobSpec::PdfOcr(_)
+            | JobSpec::PdfProtect(_)
+            | JobSpec::PdfUnlock(_)
+            | JobSpec::PdfMetadataStrip
+            | JobSpec::PdfPageNumbers(_)
+            | JobSpec::PdfDeletePages(_)
+            | JobSpec::PdfReorderPages(_)
+            | JobSpec::PdfExtractText
+            => Err(RunError::wrong_kind("LibreOfficeRunner")),
         }
     }
 }

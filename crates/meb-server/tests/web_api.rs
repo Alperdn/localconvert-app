@@ -328,6 +328,70 @@ fn pdf_bytes() -> Vec<u8> {
         .to_vec()
 }
 
+/// A real, parseable one-page PDF with a line of text and some metadata,
+/// built by `lopdf` so the fixture cannot drift from what the in-process
+/// PDF engine accepts. `pdf_bytes` above is enough for the upload probe
+/// (header and trailer) but is not a document any engine can open.
+fn real_pdf_bytes() -> Vec<u8> {
+    use lopdf::{Dictionary, Document, Object, Stream};
+
+    let mut doc = Document::with_version("1.5");
+    let font = doc.add_object(Dictionary::from_iter(vec![
+        (b"Type".to_vec(), Object::Name(b"Font".to_vec())),
+        (b"Subtype".to_vec(), Object::Name(b"Type1".to_vec())),
+        (b"BaseFont".to_vec(), Object::Name(b"Helvetica".to_vec())),
+    ]));
+    let resources = doc.add_object(Dictionary::from_iter(vec![(
+        b"Font".to_vec(),
+        Object::Dictionary(Dictionary::from_iter(vec![(
+            b"F1".to_vec(),
+            Object::Reference(font),
+        )])),
+    )]));
+    let content = doc.add_object(Stream::new(
+        Dictionary::new(),
+        b"BT\n/F1 24 Tf\n72 700 Td\n(Ogrenci Listesi) Tj\nET\n".to_vec(),
+    ));
+    let pages_id = doc.new_object_id();
+    let page = doc.add_object(Dictionary::from_iter(vec![
+        (b"Type".to_vec(), Object::Name(b"Page".to_vec())),
+        (b"Parent".to_vec(), Object::Reference(pages_id)),
+        (b"Contents".to_vec(), Object::Reference(content)),
+    ]));
+    doc.objects.insert(
+        pages_id,
+        Object::Dictionary(Dictionary::from_iter(vec![
+            (b"Type".to_vec(), Object::Name(b"Pages".to_vec())),
+            (b"Count".to_vec(), Object::Integer(1)),
+            (b"Kids".to_vec(), Object::Array(vec![Object::Reference(page)])),
+            (b"Resources".to_vec(), Object::Reference(resources)),
+            (
+                b"MediaBox".to_vec(),
+                Object::Array(vec![
+                    Object::Integer(0),
+                    Object::Integer(0),
+                    Object::Integer(612),
+                    Object::Integer(792),
+                ]),
+            ),
+        ])),
+    );
+    let catalog = doc.add_object(Dictionary::from_iter(vec![
+        (b"Type".to_vec(), Object::Name(b"Catalog".to_vec())),
+        (b"Pages".to_vec(), Object::Reference(pages_id)),
+    ]));
+    doc.trailer.set("Root", Object::Reference(catalog));
+    let info = doc.add_object(Dictionary::from_iter(vec![(
+        b"Title".to_vec(),
+        Object::string_literal("Gizli Ogrenci Listesi"),
+    )]));
+    doc.trailer.set("Info", Object::Reference(info));
+
+    let mut bytes = Vec::new();
+    doc.save_to(&mut bytes).unwrap();
+    bytes
+}
+
 /// A ZIP holding the given members, all stored uncompressed.
 fn zip_bytes(members: &[(&str, &[u8])]) -> Vec<u8> {
     use std::io::Write;
@@ -555,6 +619,103 @@ async fn a_multi_input_pdf_job_runs_through_the_generalized_pipeline() {
     assert!(download.body.starts_with(b"%PDF-"));
 }
 
+/// A whole PDF job through the real production wiring: upload, job,
+/// engine, output validation, download.
+///
+/// This is the first such test that does not depend on what is installed
+/// on the machine running it. Every other PDF kind needs Ghostscript or
+/// LibreOffice, so until now the end-to-end path could only be exercised
+/// with an injected test runner (or with a real image job). These two
+/// kinds are pure Rust, so the production server can be driven here.
+#[tokio::test]
+async fn in_process_pdf_jobs_run_end_to_end_on_the_production_wiring() {
+    let server = TestServer::production();
+    let mut c = server.client();
+
+    let uploaded = c.upload("Öğrenci Listesi.pdf", real_pdf_bytes()).await;
+    assert_eq!(
+        uploaded.status,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&uploaded.body)
+    );
+    let pdf_id = uploaded.json()["file_id"].as_str().unwrap().to_string();
+
+    // A document rewrite: the metadata goes, the document stays.
+    let created = c
+        .post_json(
+            "/api/v1/jobs",
+            json!({ "kind": "pdf_metadata_strip", "file_id": pdf_id.clone() }),
+        )
+        .await;
+    assert_eq!(
+        created.status,
+        StatusCode::ACCEPTED,
+        "{}",
+        String::from_utf8_lossy(&created.body)
+    );
+    let job_id = created.json()["job_id"].as_str().unwrap().to_string();
+    let terminal = c.wait_terminal(&job_id).await;
+    assert_eq!(terminal["state"], "completed", "{terminal}");
+    assert_eq!(terminal["progress_pct"], 100, "{terminal}");
+
+    let download = c.get(&format!("/api/v1/jobs/{job_id}/download")).await;
+    assert_eq!(download.status, StatusCode::OK);
+    assert_eq!(download.headers[header::CONTENT_TYPE], "application/pdf");
+    assert!(download.body.starts_with(b"%PDF-"));
+    // The stripped value is gone from the bytes the user receives, and the
+    // download is named for what was done to it.
+    let needle = b"Gizli Ogrenci Listesi";
+    assert!(
+        !download
+            .body
+            .windows(needle.len())
+            .any(|w| w == needle),
+        "the stripped title is still in the downloaded file"
+    );
+    let disposition = download.headers[header::CONTENT_DISPOSITION]
+        .to_str()
+        .unwrap();
+    assert!(disposition.contains("ustverisiz.pdf"), "{disposition}");
+
+    // And the one kind whose output is not a document at all.
+    let created = c
+        .post_json(
+            "/api/v1/jobs",
+            json!({ "kind": "pdf_extract_text", "file_id": pdf_id }),
+        )
+        .await;
+    assert_eq!(
+        created.status,
+        StatusCode::ACCEPTED,
+        "{}",
+        String::from_utf8_lossy(&created.body)
+    );
+    let snapshot = created.json();
+    assert_eq!(snapshot["output_format"], "txt");
+    let job_id = snapshot["job_id"].as_str().unwrap().to_string();
+    let terminal = c.wait_terminal(&job_id).await;
+    assert_eq!(terminal["state"], "completed", "{terminal}");
+
+    let download = c.get(&format!("/api/v1/jobs/{job_id}/download")).await;
+    assert_eq!(download.status, StatusCode::OK);
+    assert_eq!(
+        download.headers[header::CONTENT_TYPE],
+        "text/plain; charset=utf-8"
+    );
+    let text = String::from_utf8(download.body).expect("the download is not UTF-8");
+    assert!(text.contains("Ogrenci Listesi"), "{text:?}");
+
+    // Only the published output is left in each workspace, as for every
+    // other kind.
+    for dir in server.job_dirs() {
+        assert!(
+            !dir.join("work").exists(),
+            "{dir:?} kept its work directory"
+        );
+    }
+}
+
 /// A kind the API publishes but has no engine for is refused before any
 /// work, workspace or job record exists - it never becomes a failed job.
 #[tokio::test]
@@ -566,12 +727,32 @@ async fn kinds_without_an_engine_are_refused_before_any_work() {
         .unwrap()
         .to_string();
 
-    for body in [
+    // Which kinds those are depends on what is installed here, so the
+    // list is taken from what the server itself publishes: a kind absent
+    // from /capabilities must be refused, whatever the reason it is
+    // absent. `pdf_watermark` has no engine in the code at all, so it is
+    // always in that set - which is what makes this test meaningful on a
+    // machine that does have every tool installed.
+    let published = c.get("/api/v1/capabilities").await.json();
+    let wired: Vec<String> = published["kinds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|k| k.as_str().unwrap().to_string())
+        .collect();
+    assert!(!wired.contains(&"pdf_watermark".to_string()));
+
+    let candidates = [
+        json!({ "kind": "pdf_watermark", "file_id": pdf_id.clone(), "options": { "text": "Gizli" } }),
         json!({ "kind": "pdf_merge", "file_ids": [pdf_id.clone(), pdf_id.clone()] }),
         json!({ "kind": "pdf_compress", "file_id": pdf_id.clone() }),
         json!({ "kind": "pdf_rotate", "file_id": pdf_id.clone(), "options": { "rotation": "90" } }),
         json!({ "kind": "pdf_ocr", "file_id": pdf_id.clone() }),
-    ] {
+    ];
+    for body in candidates {
+        if wired.contains(&body["kind"].as_str().unwrap().to_string()) {
+            continue;
+        }
         let r = c.post_json("/api/v1/jobs", body.clone()).await;
         assert_eq!(
             (r.status, r.code().as_str()),
@@ -1022,6 +1203,35 @@ async fn jpeg_to_png_conversion_end_to_end() {
         // itself: a capability is AVAILABLE exactly when every job kind it
         // needs is posted as executable. (Hardcoding "not implemented"
         // here would instead assert a fact about the dev machine.)
+        // The in-process PDF operations need no tool, so these are not
+        // conditional on anything: they are AVAILABLE on every machine,
+        // and that is the whole point of their being separate kinds.
+        for id in [
+            "pdf_protection",
+            "pdf_page_management",
+            "pdf_metadata_removal",
+            "pdf_text_extraction",
+        ] {
+            assert_eq!(state_of(id), "AVAILABLE", "{id}");
+        }
+        for kind in [
+            "pdf_protect",
+            "pdf_unlock",
+            "pdf_metadata_strip",
+            "pdf_page_numbers",
+            "pdf_delete_pages",
+            "pdf_reorder_pages",
+            "pdf_extract_text",
+        ] {
+            assert!(kinds.contains(&kind), "{kind} is not executable");
+        }
+        // The text output a PDF job can have is advertised with them.
+        let pdf_outputs = caps["formats"]["pdf"]["outputs"].as_array().unwrap();
+        assert!(
+            pdf_outputs.iter().any(|o| o == "txt"),
+            "pdf outputs do not include the extracted-text output: {pdf_outputs:?}"
+        );
+
         let published: &[(&str, &[&str])] = &[
             ("office_to_pdf", &["office_convert"]),
             ("pdf_to_office", &["pdf_to_office"]),
@@ -1042,11 +1252,12 @@ async fn jpeg_to_png_conversion_end_to_end() {
             let expected = if wired { "AVAILABLE" } else { "NOT_IMPLEMENTED" };
             assert_eq!(state_of(id), expected, "{id} (kinds: {kinds:?})");
         }
-        // Watermark and OCR have no engine at all yet, so nothing can wire
-        // them and `pdf_structural_ops` cannot be available either.
+        // The watermark is the one PDF operation with no engine at all in
+        // the code, so nothing can wire it on any machine - and
+        // `pdf_structural_ops` therefore cannot be available either. OCR is
+        // implemented, so whether it is wired is a fact about this machine
+        // and is covered by the derivation above, not asserted here.
         assert!(!kinds.contains(&"pdf_watermark"));
-        assert!(!kinds.contains(&"pdf_ocr"));
-        assert_eq!(state_of("ocr"), "NOT_IMPLEMENTED");
         assert_eq!(state_of("pdf_structural_ops"), "NOT_IMPLEMENTED");
 
         // Advertised formats follow the same rule.

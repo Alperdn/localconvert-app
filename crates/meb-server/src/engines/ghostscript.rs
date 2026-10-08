@@ -89,7 +89,7 @@ impl GhostscriptRunner {
     /// start) is exercised on a machine with no Ghostscript installed, by
     /// standing a well-known system binary in for the engine.
     #[cfg(test)]
-    fn with_engine(path: PathBuf, timeout: Duration) -> GhostscriptRunner {
+    pub(crate) fn with_engine(path: PathBuf, timeout: Duration) -> GhostscriptRunner {
         GhostscriptRunner {
             engine: resolver::ResolvedEngine {
                 id: EngineId::Ghostscript,
@@ -259,7 +259,7 @@ impl GhostscriptRunner {
                 let mut args = Self::base_args(&template);
                 args.push(input);
                 self.invoke(&args, work_dir, control, OPERATION_FAILED)?;
-                pages = produced_pages(&pages_dir)?;
+                pages = produced_pages(&pages_dir, "pdf", OPERATION_FAILED)?;
             }
         }
 
@@ -284,6 +284,64 @@ impl GhostscriptRunner {
     }
 }
 
+/// Resolution the pages of an OCR job are rendered at. 300 dpi is what
+/// Tesseract's own documentation asks for: below it recognition accuracy
+/// falls off sharply, and above it costs time and memory for nothing.
+const RENDER_DPI: u32 = 300;
+
+/// What an OCR job needs Ghostscript for. These are `pub(crate)` rather
+/// than part of the `ConversionRunner` impl because the OCR pipeline is
+/// `TesseractRunner`'s job: it owns the job kind and the progress
+/// reporting, and borrows the two steps only this engine can do - so that
+/// every Ghostscript argument vector in this server is still built here.
+impl GhostscriptRunner {
+    /// Renders every page of `input` as a PNG into `pages_dir`, and returns
+    /// what was actually produced, ascending by page number.
+    pub(crate) fn render_pages_to_png(
+        &self,
+        input: &Path,
+        pages_dir: &Path,
+        work_dir: &Path,
+        control: &JobControl<'_>,
+        failure_code: &'static str,
+    ) -> Result<Vec<(u32, PathBuf)>, RunError> {
+        std::fs::create_dir_all(pages_dir).map_err(|e| RunError::Failed {
+            code: failure_code,
+            detail: format!("could not create the page work directory: {e}"),
+        })?;
+        let args = vec![
+            "-dNOPAUSE".to_string(),
+            "-dBATCH".to_string(),
+            "-dSAFER".to_string(),
+            "-sDEVICE=png16m".to_string(),
+            format!("-r{RENDER_DPI}"),
+            format!(
+                "-sOutputFile={}",
+                pages_dir.join("%d.png").to_string_lossy()
+            ),
+            input.to_string_lossy().to_string(),
+        ];
+        self.invoke(&args, work_dir, control, failure_code)?;
+        produced_pages(pages_dir, "png", failure_code)
+    }
+
+    /// Writes `inputs`, in order, into one PDF at `output`.
+    pub(crate) fn combine_pdfs(
+        &self,
+        inputs: &[PathBuf],
+        output: &Path,
+        work_dir: &Path,
+        control: &JobControl<'_>,
+        failure_code: &'static str,
+    ) -> Result<(), RunError> {
+        let mut args = Self::base_args(output);
+        for input in inputs {
+            args.push(input.to_string_lossy().to_string());
+        }
+        self.invoke(&args, work_dir, control, failure_code)
+    }
+}
+
 impl ConversionRunner for GhostscriptRunner {
     fn run(&self, request: &RunRequest<'_>, control: &JobControl<'_>) -> Result<(), RunError> {
         match request.spec {
@@ -291,14 +349,24 @@ impl ConversionRunner for GhostscriptRunner {
             JobSpec::PdfSplit(spec) => self.split(spec, request, control),
             JobSpec::PdfCompress(options) => self.compress(options, request, control),
             JobSpec::PdfRotate(options) => self.rotate(options, request, control),
-            // Ghostscript could do a watermark and is a step of OCR, but
-            // neither is wired to this runner yet; being handed one is a
-            // registry wiring mistake, not something to guess at.
+            // Ghostscript could do a watermark, and it renders the page
+            // images an OCR job starts from - but that pipeline belongs to
+            // `TesseractRunner`, which calls the helpers below rather than
+            // being handed the job. Being given any of these is a registry
+            // wiring mistake, not something to guess at.
             JobSpec::ImageConvert(_)
             | JobSpec::PdfWatermark(_)
             | JobSpec::PdfOcr(_)
             | JobSpec::OfficeConvert(_)
-            | JobSpec::PdfToOffice(_) => Err(RunError::wrong_kind("GhostscriptRunner")),
+            | JobSpec::PdfToOffice(_)
+            | JobSpec::PdfProtect(_)
+            | JobSpec::PdfUnlock(_)
+            | JobSpec::PdfMetadataStrip
+            | JobSpec::PdfPageNumbers(_)
+            | JobSpec::PdfDeletePages(_)
+            | JobSpec::PdfReorderPages(_)
+            | JobSpec::PdfExtractText
+            => Err(RunError::wrong_kind("GhostscriptRunner")),
         }
     }
 }
@@ -329,12 +397,16 @@ fn is_non_empty_file(path: &Path) -> bool {
 }
 
 /// The per-page files a `%d` template run actually produced, ascending by
-/// page number. Only `<number>.pdf` entries count, so nothing Ghostscript
-/// did not name this way can end up in the archive.
-fn produced_pages(pages_dir: &Path) -> Result<Vec<(u32, PathBuf)>, RunError> {
+/// page number. Only `<number>.<extension>` entries count, so nothing
+/// Ghostscript did not name this way is ever picked up.
+pub(crate) fn produced_pages(
+    pages_dir: &Path,
+    extension: &str,
+    failure_code: &'static str,
+) -> Result<Vec<(u32, PathBuf)>, RunError> {
     let entries = std::fs::read_dir(pages_dir).map_err(|e| RunError::Failed {
-        code: OPERATION_FAILED,
-        detail: format!("could not read the split work directory: {e}"),
+        code: failure_code,
+        detail: format!("could not read the page work directory: {e}"),
     })?;
     let mut pages: Vec<(u32, PathBuf)> = Vec::new();
     for entry in entries.flatten() {
@@ -346,7 +418,7 @@ fn produced_pages(pages_dir: &Path) -> Result<Vec<(u32, PathBuf)>, RunError> {
         else {
             continue;
         };
-        if path.extension().is_some_and(|e| e == "pdf") && is_non_empty_file(&path) {
+        if path.extension().is_some_and(|e| e == extension) && is_non_empty_file(&path) {
             pages.push((page, path));
         }
     }
@@ -558,7 +630,7 @@ mod tests {
         std::fs::write(dir.join("3.txt"), b"x").unwrap();
         std::fs::write(dir.join("4.pdf"), b"").unwrap();
 
-        let pages = produced_pages(&dir).unwrap();
+        let pages = produced_pages(&dir, "pdf", OPERATION_FAILED).unwrap();
         assert_eq!(
             pages.iter().map(|(p, _)| *p).collect::<Vec<_>>(),
             vec![1, 2, 10]

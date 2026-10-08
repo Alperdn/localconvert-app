@@ -38,6 +38,24 @@ percent-encoding = "2"
 # MIT/Apache-2.0 - packs the per-page PDFs of a split job into the single
 # archive the job model publishes.
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# MIT - pure-Rust PDF manipulation, the same library the desktop app uses
+# for its PDF text editing. It backs every PDF operation that needs no
+# external engine at all (see src/engines/lopdf_ops.rs).
+#
+# NEWER than src-tauri's 0.33 on purpose: writing encryption
+# (`Document::encrypt`) only exists from 0.34 onwards, and `pdf_protect`
+# cannot be done without it. The two packages are independent (this is
+# deliberately not a Cargo workspace), so the desktop app keeps its pinned
+# version and is not touched by this.
+#
+# Default features off: they are date-formatting backends (chrono, jiff,
+# time) and rayon, whose parallel object parsing would compete with the
+# job worker's own concurrency rather than add to it.
+lopdf = { version = "0.36", default-features = false }
+# The OS CSPRNG, for the 256-bit AES file encryption key of a protected
+# PDF. Already in the tree (uuid v4 uses it), and deliberately the raw
+# system entropy source rather than a seeded userspace generator.
+getrandom = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 

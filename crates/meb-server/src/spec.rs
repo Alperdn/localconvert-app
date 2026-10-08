@@ -76,10 +76,27 @@ pub enum JobKind {
     /// see `JobKind::is_experimental`. The desktop app draws the same
     /// boundary in `src-tauri/src/reconstruction.rs`.
     PdfToOffice,
+    /// One PDF re-written with a password required to open it.
+    PdfProtect,
+    /// One PDF re-written with its password protection removed.
+    PdfUnlock,
+    /// One PDF re-written without any document metadata.
+    PdfMetadataStrip,
+    /// One PDF with a page number drawn on every page.
+    PdfPageNumbers,
+    /// One PDF with the named pages removed.
+    PdfDeletePages,
+    /// One PDF with its pages re-arranged into a given order.
+    PdfReorderPages,
+    /// The text already present in one PDF, extracted to a `.txt` file.
+    ///
+    /// Extraction, not recognition: it reads the text a PDF already
+    /// contains and finds nothing in a scan (that is `PdfOcr`).
+    PdfExtractText,
 }
 
 impl JobKind {
-    pub const ALL: [JobKind; 9] = [
+    pub const ALL: [JobKind; 16] = [
         JobKind::ImageConvert,
         JobKind::PdfMerge,
         JobKind::PdfSplit,
@@ -89,6 +106,13 @@ impl JobKind {
         JobKind::PdfOcr,
         JobKind::OfficeConvert,
         JobKind::PdfToOffice,
+        JobKind::PdfProtect,
+        JobKind::PdfUnlock,
+        JobKind::PdfMetadataStrip,
+        JobKind::PdfPageNumbers,
+        JobKind::PdfDeletePages,
+        JobKind::PdfReorderPages,
+        JobKind::PdfExtractText,
     ];
 
     /// The value a client sends as `kind`, and the one echoed in snapshots.
@@ -105,6 +129,13 @@ impl JobKind {
             JobKind::PdfOcr => "pdf_ocr",
             JobKind::OfficeConvert => "office_convert",
             JobKind::PdfToOffice => "pdf_to_office",
+            JobKind::PdfProtect => "pdf_protect",
+            JobKind::PdfUnlock => "pdf_unlock",
+            JobKind::PdfMetadataStrip => "pdf_metadata_strip",
+            JobKind::PdfPageNumbers => "pdf_page_numbers",
+            JobKind::PdfDeletePages => "pdf_delete_pages",
+            JobKind::PdfReorderPages => "pdf_reorder_pages",
+            JobKind::PdfExtractText => "pdf_extract_text",
         }
     }
 
@@ -124,7 +155,14 @@ impl JobKind {
             | JobKind::PdfRotate
             | JobKind::PdfWatermark
             | JobKind::PdfOcr
-            | JobKind::OfficeConvert => false,
+            | JobKind::OfficeConvert
+            | JobKind::PdfProtect
+            | JobKind::PdfUnlock
+            | JobKind::PdfMetadataStrip
+            | JobKind::PdfPageNumbers
+            | JobKind::PdfDeletePages
+            | JobKind::PdfReorderPages
+            | JobKind::PdfExtractText => false,
         }
     }
 
@@ -142,7 +180,14 @@ impl JobKind {
             | JobKind::PdfWatermark
             | JobKind::PdfOcr
             | JobKind::OfficeConvert
-            | JobKind::PdfToOffice => Arity::One,
+            | JobKind::PdfToOffice
+            | JobKind::PdfProtect
+            | JobKind::PdfUnlock
+            | JobKind::PdfMetadataStrip
+            | JobKind::PdfPageNumbers
+            | JobKind::PdfDeletePages
+            | JobKind::PdfReorderPages
+            | JobKind::PdfExtractText => Arity::One,
         }
     }
 
@@ -216,10 +261,14 @@ impl PdfRotation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OcrLanguage {
-    #[default]
     Turkish,
     English,
-    /// Both, which costs more time but handles mixed documents.
+    /// Both, and the DEFAULT: a Turkish school's scans are mostly Turkish
+    /// with English fragments (course names, software, references), and
+    /// Tesseract reads that better when told both languages than when told
+    /// either one. It costs recognition time, which an OCR job is spending
+    /// anyway.
+    #[default]
     TurkishAndEnglish,
 }
 
@@ -305,6 +354,120 @@ pub struct PdfToOfficeSpec {
     pub target: OfficeFormat,
 }
 
+/// Where a page number is drawn. A closed set: it chooses between fixed
+/// coordinate formulas, so no client value becomes a position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PageNumberPosition {
+    TopLeft,
+    TopCenter,
+    TopRight,
+    BottomLeft,
+    #[default]
+    BottomCenter,
+    BottomRight,
+}
+
+/// Longest password accepted. The PDF standard security handler hashes at
+/// most 127 bytes of a password anyway (and the pre-2.0 revisions only 32),
+/// so a longer one would be silently truncated by any reader - a bound here
+/// is honest where accepting it would not be.
+const MAX_PASSWORD_CHARS: usize = 64;
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PdfProtectOptions {
+    /// Required to OPEN the result.
+    pub password: String,
+    /// Optional, and required to CHANGE the result (remove the protection,
+    /// re-encrypt it). Absent means the same password does both, which is
+    /// what a single-password request means.
+    #[serde(default)]
+    pub owner_password: Option<String>,
+}
+
+/// Debug is implemented by hand for every password-carrying type below: the
+/// spec is held in the job record for the job's whole life, and a derived
+/// `Debug` would put the password into any log line that ever formats a
+/// job. There is no code path that needs to see it.
+#[derive(Clone)]
+pub struct PdfProtectSpec {
+    pub user_password: String,
+    pub owner_password: String,
+}
+
+impl std::fmt::Debug for PdfProtectSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PdfProtectSpec { passwords: <redacted> }")
+    }
+}
+
+#[derive(Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PdfUnlockOptions {
+    /// The password that opens the document. Absent is valid: a PDF can be
+    /// encrypted with an empty user password and only a set of
+    /// restrictions, and that one opens without a password at all.
+    #[serde(default)]
+    pub password: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct PdfUnlockSpec {
+    pub password: Option<String>,
+}
+
+impl std::fmt::Debug for PdfUnlockSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PdfUnlockSpec { password: <redacted> }")
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PdfPageNumbersOptions {
+    #[serde(default)]
+    pub position: PageNumberPosition,
+    /// The number printed on the FIRST page. Absent means 1.
+    pub start_at: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PdfPageNumbersSpec {
+    pub position: PageNumberPosition,
+    pub start_at: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PdfDeletePagesOptions {
+    /// 1-based page numbers to remove. Required: a delete with no pages
+    /// named would be a copy presented as an edit.
+    pub pages: Vec<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PdfDeletePagesSpec {
+    /// De-duplicated and ascending.
+    pub pages: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PdfReorderPagesOptions {
+    /// The new order, as 1-based numbers of the ORIGINAL pages.
+    pub order: Vec<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PdfReorderPagesSpec {
+    /// A permutation of `1..=order.len()`: every original page appears
+    /// exactly once. A list that dropped or repeated a page would be a
+    /// delete or a duplicate, which are different operations (one of them
+    /// is `pdf_delete_pages`), so it is refused rather than reinterpreted.
+    pub order: Vec<u32>,
+}
+
 /// Everything an Office document of this format may be converted to: PDF,
 /// or another Office format of the SAME document class (`docx <-> odt`, but
 /// never `docx -> ods`). Converting a format to itself is excluded - the
@@ -350,6 +513,13 @@ pub enum JobSpec {
     PdfOcr(PdfOcrOptions),
     OfficeConvert(OfficeConvertSpec),
     PdfToOffice(PdfToOfficeSpec),
+    PdfProtect(PdfProtectSpec),
+    PdfUnlock(PdfUnlockSpec),
+    PdfMetadataStrip,
+    PdfPageNumbers(PdfPageNumbersSpec),
+    PdfDeletePages(PdfDeletePagesSpec),
+    PdfReorderPages(PdfReorderPagesSpec),
+    PdfExtractText,
 }
 
 /// A create-job request as it arrives. Parsed strictly: an unknown
@@ -512,6 +682,75 @@ impl JobSpec {
                 reject_options(request)?;
                 Ok(JobSpec::PdfToOffice(PdfToOfficeSpec { target }))
             }
+            JobKind::PdfProtect => {
+                require_all_pdf(sources)?;
+                reject_output_format(request)?;
+                // No default: a protect job with no password would produce
+                // an unprotected file under a name that says otherwise.
+                let options: PdfProtectOptions = require_options(request.options.as_ref())?;
+                let user_password = validate_password(&options.password)?;
+                let owner_password = match &options.owner_password {
+                    Some(raw) => validate_password(raw)?,
+                    None => user_password.clone(),
+                };
+                Ok(JobSpec::PdfProtect(PdfProtectSpec {
+                    user_password,
+                    owner_password,
+                }))
+            }
+            JobKind::PdfUnlock => {
+                require_all_pdf(sources)?;
+                reject_output_format(request)?;
+                let options: PdfUnlockOptions = parse_options(request.options.as_ref())?;
+                let password = match &options.password {
+                    Some(raw) => Some(validate_password(raw)?),
+                    None => None,
+                };
+                Ok(JobSpec::PdfUnlock(PdfUnlockSpec { password }))
+            }
+            JobKind::PdfMetadataStrip => {
+                require_all_pdf(sources)?;
+                reject_output_format(request)?;
+                reject_options(request)?;
+                Ok(JobSpec::PdfMetadataStrip)
+            }
+            JobKind::PdfPageNumbers => {
+                require_all_pdf(sources)?;
+                reject_output_format(request)?;
+                let options: PdfPageNumbersOptions = parse_options(request.options.as_ref())?;
+                let start_at = options.start_at.unwrap_or(1);
+                // Bounded by the same page cap every PDF operation uses, so
+                // the drawn number cannot be arbitrarily wide either.
+                if start_at == 0 || start_at > MAX_PDF_PAGE {
+                    return Err(ApiError::invalid_request());
+                }
+                Ok(JobSpec::PdfPageNumbers(PdfPageNumbersSpec {
+                    position: options.position,
+                    start_at,
+                }))
+            }
+            JobKind::PdfDeletePages => {
+                require_all_pdf(sources)?;
+                reject_output_format(request)?;
+                let options: PdfDeletePagesOptions = require_options(request.options.as_ref())?;
+                let pages = normalize_pages(Some(options.pages))?
+                    .ok_or_else(ApiError::invalid_request)?;
+                Ok(JobSpec::PdfDeletePages(PdfDeletePagesSpec { pages }))
+            }
+            JobKind::PdfReorderPages => {
+                require_all_pdf(sources)?;
+                reject_output_format(request)?;
+                let options: PdfReorderPagesOptions = require_options(request.options.as_ref())?;
+                Ok(JobSpec::PdfReorderPages(PdfReorderPagesSpec {
+                    order: validate_page_order(options.order)?,
+                }))
+            }
+            JobKind::PdfExtractText => {
+                require_all_pdf(sources)?;
+                reject_output_format(request)?;
+                reject_options(request)?;
+                Ok(JobSpec::PdfExtractText)
+            }
         }
     }
 
@@ -526,6 +765,13 @@ impl JobSpec {
             JobSpec::PdfOcr(_) => JobKind::PdfOcr,
             JobSpec::OfficeConvert(_) => JobKind::OfficeConvert,
             JobSpec::PdfToOffice(_) => JobKind::PdfToOffice,
+            JobSpec::PdfProtect(_) => JobKind::PdfProtect,
+            JobSpec::PdfUnlock(_) => JobKind::PdfUnlock,
+            JobSpec::PdfMetadataStrip => JobKind::PdfMetadataStrip,
+            JobSpec::PdfPageNumbers(_) => JobKind::PdfPageNumbers,
+            JobSpec::PdfDeletePages(_) => JobKind::PdfDeletePages,
+            JobSpec::PdfReorderPages(_) => JobKind::PdfReorderPages,
+            JobSpec::PdfExtractText => JobKind::PdfExtractText,
         }
     }
 
@@ -538,11 +784,18 @@ impl JobSpec {
         match self {
             JobSpec::ImageConvert(s) => s.target.canonical_extension(),
             JobSpec::PdfSplit(_) => "zip",
+            JobSpec::PdfExtractText => "txt",
             JobSpec::PdfMerge(_)
             | JobSpec::PdfCompress(_)
             | JobSpec::PdfRotate(_)
             | JobSpec::PdfWatermark(_)
-            | JobSpec::PdfOcr(_) => "pdf",
+            | JobSpec::PdfOcr(_)
+            | JobSpec::PdfProtect(_)
+            | JobSpec::PdfUnlock(_)
+            | JobSpec::PdfMetadataStrip
+            | JobSpec::PdfPageNumbers(_)
+            | JobSpec::PdfDeletePages(_)
+            | JobSpec::PdfReorderPages(_) => "pdf",
             JobSpec::OfficeConvert(s) => s.target.canonical_extension(),
             JobSpec::PdfToOffice(s) => s.target.canonical_extension(),
         }
@@ -552,11 +805,18 @@ impl JobSpec {
         match self {
             JobSpec::ImageConvert(s) => s.target.mime_type(),
             JobSpec::PdfSplit(_) => "application/zip",
+            JobSpec::PdfExtractText => "text/plain; charset=utf-8",
             JobSpec::PdfMerge(_)
             | JobSpec::PdfCompress(_)
             | JobSpec::PdfRotate(_)
             | JobSpec::PdfWatermark(_)
-            | JobSpec::PdfOcr(_) => "application/pdf",
+            | JobSpec::PdfOcr(_)
+            | JobSpec::PdfProtect(_)
+            | JobSpec::PdfUnlock(_)
+            | JobSpec::PdfMetadataStrip
+            | JobSpec::PdfPageNumbers(_)
+            | JobSpec::PdfDeletePages(_)
+            | JobSpec::PdfReorderPages(_) => "application/pdf",
             JobSpec::OfficeConvert(s) => s.target.mime_type(),
             JobSpec::PdfToOffice(s) => s.target.mime_type(),
         }
@@ -583,6 +843,13 @@ impl JobSpec {
             // marked experimental in the name the user downloads, because
             // that is the artifact they will keep and possibly hand on.
             JobSpec::PdfToOffice(_) => Some("deneysel"),
+            JobSpec::PdfProtect(_) => Some("korumali"),
+            JobSpec::PdfUnlock(_) => Some("korumasiz"),
+            JobSpec::PdfMetadataStrip => Some("ustverisiz"),
+            JobSpec::PdfPageNumbers(_) => Some("numarali"),
+            JobSpec::PdfDeletePages(_) => Some("sayfa_silindi"),
+            JobSpec::PdfReorderPages(_) => Some("yeniden_siralandi"),
+            JobSpec::PdfExtractText => Some("metin"),
         };
         match suffix {
             Some(suffix) => format!("{display_stem}_{suffix}.{extension}"),
@@ -612,7 +879,28 @@ impl JobSpec {
             | JobSpec::PdfCompress(_)
             | JobSpec::PdfRotate(_)
             | JobSpec::PdfWatermark(_)
-            | JobSpec::PdfOcr(_) => probe_as(path, SourceFormat::Pdf),
+            | JobSpec::PdfOcr(_)
+            // A protected output is encrypted, which the PDF probe is
+            // unaffected by: it reads the header and the trailer, both of
+            // which stay in the clear in an encrypted PDF.
+            | JobSpec::PdfProtect(_)
+            | JobSpec::PdfUnlock(_)
+            | JobSpec::PdfMetadataStrip
+            | JobSpec::PdfPageNumbers(_)
+            | JobSpec::PdfDeletePages(_)
+            | JobSpec::PdfReorderPages(_) => probe_as(path, SourceFormat::Pdf),
+            // The one text output. There is no format to probe, so what is
+            // checked is what the promise actually was: real, decodable
+            // text. An empty file would be a "successful" extraction that
+            // gave the user nothing.
+            JobSpec::PdfExtractText => match std::fs::read(path) {
+                Ok(bytes) if bytes.is_empty() => Err("the extracted text file is empty"),
+                Ok(bytes) if std::str::from_utf8(&bytes).is_err() => {
+                    Err("the extracted text is not valid UTF-8")
+                }
+                Ok(_) => Ok(()),
+                Err(_) => Err("the extracted text file could not be read back"),
+            },
             JobSpec::PdfSplit(_) => {
                 let head = head_of(path, OUTPUT_HEAD_BYTES);
                 if matches!(Container::sniff(&head), Some(Container::Zip)) {
@@ -704,6 +992,39 @@ fn normalize_pages(pages: Option<Vec<u32>>) -> Result<Option<Vec<u32>>, ApiError
     pages.sort_unstable();
     pages.dedup();
     Ok(Some(pages))
+}
+
+/// A password is secret display data: it is never a command line argument
+/// (these operations run in-process), so what matters is that it is a
+/// usable password at all - non-empty once trimmed of nothing, free of
+/// control characters, and short enough that the PDF security handler will
+/// actually hash all of it.
+///
+/// Whitespace is NOT trimmed: it is significant in a password, and silently
+/// changing one would lock the user out of their own file.
+fn validate_password(raw: &str) -> Result<String, ApiError> {
+    let length = raw.chars().count();
+    if length == 0 || length > MAX_PASSWORD_CHARS || raw.chars().any(char::is_control) {
+        return Err(ApiError::invalid_request());
+    }
+    Ok(raw.to_string())
+}
+
+/// A page order must be a permutation of `1..=n`: exactly the pages the
+/// document's first `n` pages are, each once. Anything else means some
+/// other operation (a delete, a duplication, an extraction) and is refused
+/// rather than guessed at. Whether `n` really is the document's page count
+/// is the engine's check, since only it has the document.
+fn validate_page_order(order: Vec<u32>) -> Result<Vec<u32>, ApiError> {
+    if order.is_empty() || order.len() > MAX_PDF_PAGE as usize {
+        return Err(ApiError::invalid_request());
+    }
+    let mut sorted = order.clone();
+    sorted.sort_unstable();
+    if !sorted.iter().copied().eq(1..=order.len() as u32) {
+        return Err(ApiError::invalid_request());
+    }
+    Ok(order)
 }
 
 /// Watermark text is drawn into a document, so it is display data: control
@@ -1060,7 +1381,7 @@ mod tests {
         assert!(ocr(serde_json::json!({ "language": "turkish" })).is_ok());
         assert!(ocr(serde_json::json!({ "language": "turkish_and_english" })).is_ok());
         assert!(ocr(serde_json::json!({ "language": "klingon" })).is_err());
-        assert_eq!(OcrLanguage::default().code(), "tur");
+        assert_eq!(OcrLanguage::default().code(), "tur+eng");
     }
 
     #[test]
@@ -1294,6 +1615,49 @@ mod tests {
                 serde_json::Value::Null,
             )
             .unwrap(),
+            spec_of(
+                JobKind::PdfProtect,
+                &[PDF],
+                None,
+                serde_json::json!({ "password": "parola" }),
+            )
+            .unwrap(),
+            spec_of(JobKind::PdfUnlock, &[PDF], None, serde_json::Value::Null).unwrap(),
+            spec_of(
+                JobKind::PdfMetadataStrip,
+                &[PDF],
+                None,
+                serde_json::Value::Null,
+            )
+            .unwrap(),
+            spec_of(
+                JobKind::PdfPageNumbers,
+                &[PDF],
+                None,
+                serde_json::Value::Null,
+            )
+            .unwrap(),
+            spec_of(
+                JobKind::PdfDeletePages,
+                &[PDF],
+                None,
+                serde_json::json!({ "pages": [2] }),
+            )
+            .unwrap(),
+            spec_of(
+                JobKind::PdfReorderPages,
+                &[PDF],
+                None,
+                serde_json::json!({ "order": [2, 1] }),
+            )
+            .unwrap(),
+            spec_of(
+                JobKind::PdfExtractText,
+                &[PDF],
+                None,
+                serde_json::Value::Null,
+            )
+            .unwrap(),
         ];
         let names: Vec<String> = specs.iter().map(|s| s.output_name("rapor")).collect();
         let mut unique = names.clone();
@@ -1370,6 +1734,207 @@ mod tests {
             options: None,
         };
         assert_eq!(one.input_ids(JobKind::ImageConvert).unwrap(), ["a"]);
+    }
+
+    /// The seven kinds that need no external engine. Their options are the
+    /// only thing between a client and an in-process document rewrite, so
+    /// each one's rules are checked here rather than in the engine.
+    #[test]
+    fn the_in_process_pdf_operations_validate_their_own_options() {
+        let spec = |kind: JobKind, options: serde_json::Value| spec_of(kind, &[PDF], None, options);
+
+        // A protect job must say what the password is; an empty one, a
+        // control character, and an over-long one are all refused.
+        assert!(spec(JobKind::PdfProtect, serde_json::json!({ "password": "açık kapı" })).is_ok());
+        assert!(spec(
+            JobKind::PdfProtect,
+            serde_json::json!({ "password": "a", "owner_password": "b" })
+        )
+        .is_ok());
+        for bad in [
+            serde_json::Value::Null,
+            serde_json::json!({}),
+            serde_json::json!({ "password": "" }),
+            serde_json::json!({ "password": "pa\u{7}rola" }),
+            serde_json::json!({ "password": "x".repeat(MAX_PASSWORD_CHARS + 1) }),
+            // Not this kind's schema.
+            serde_json::json!({ "pass": "parola" }),
+        ] {
+            assert_eq!(
+                spec(JobKind::PdfProtect, bad.clone()).err().map(|e| e.code),
+                Some("INVALID_REQUEST"),
+                "accepted {bad}"
+            );
+        }
+        // Whitespace is significant in a password and is not trimmed away.
+        let padded = spec(JobKind::PdfProtect, serde_json::json!({ "password": " p " })).unwrap();
+        match padded {
+            JobSpec::PdfProtect(s) => {
+                assert_eq!(s.user_password, " p ");
+                // One password given means it is both passwords.
+                assert_eq!(s.owner_password, " p ");
+            }
+            other => panic!("expected a protect spec, got {other:?}"),
+        }
+
+        // Unlocking a PDF that only carries restrictions needs no password,
+        // so absent options are valid here.
+        assert!(spec(JobKind::PdfUnlock, serde_json::Value::Null).is_ok());
+        assert!(spec(JobKind::PdfUnlock, serde_json::json!({ "password": "p" })).is_ok());
+        assert!(spec(JobKind::PdfUnlock, serde_json::json!({ "password": "" })).is_err());
+
+        // Two kinds take nothing at all.
+        for kind in [JobKind::PdfMetadataStrip, JobKind::PdfExtractText] {
+            assert!(spec(kind, serde_json::Value::Null).is_ok());
+            assert_eq!(
+                spec(kind, serde_json::json!({ "pages": [1] }))
+                    .err()
+                    .map(|e| e.code),
+                Some("INVALID_REQUEST"),
+                "{} accepted options",
+                kind.wire()
+            );
+        }
+
+        // Page numbers: a closed position set and a bounded start.
+        assert!(spec(JobKind::PdfPageNumbers, serde_json::Value::Null).is_ok());
+        assert!(spec(
+            JobKind::PdfPageNumbers,
+            serde_json::json!({ "position": "top_right", "start_at": 12 })
+        )
+        .is_ok());
+        for bad in [
+            serde_json::json!({ "position": "middle" }),
+            serde_json::json!({ "position": "bottom center" }),
+            serde_json::json!({ "start_at": 0 }),
+            serde_json::json!({ "start_at": MAX_PDF_PAGE + 1 }),
+        ] {
+            assert!(
+                spec(JobKind::PdfPageNumbers, bad.clone()).is_err(),
+                "accepted {bad}"
+            );
+        }
+        let default = spec(JobKind::PdfPageNumbers, serde_json::Value::Null).unwrap();
+        match default {
+            JobSpec::PdfPageNumbers(s) => {
+                assert_eq!(s.start_at, 1);
+                assert_eq!(s.position, PageNumberPosition::BottomCenter);
+            }
+            other => panic!("expected a page-numbers spec, got {other:?}"),
+        }
+
+        // Deleting pages: the same normalization every page list gets, and
+        // a list is required - a delete with no pages would be a copy.
+        let deleted = spec(
+            JobKind::PdfDeletePages,
+            serde_json::json!({ "pages": [3, 1, 3] }),
+        )
+        .unwrap();
+        match deleted {
+            JobSpec::PdfDeletePages(s) => assert_eq!(s.pages, vec![1, 3]),
+            other => panic!("expected a delete spec, got {other:?}"),
+        }
+        for bad in [
+            serde_json::Value::Null,
+            serde_json::json!({ "pages": [] }),
+            serde_json::json!({ "pages": [0] }),
+            serde_json::json!({ "pages": [MAX_PDF_PAGE + 1] }),
+        ] {
+            assert!(
+                spec(JobKind::PdfDeletePages, bad.clone()).is_err(),
+                "accepted {bad}"
+            );
+        }
+
+        // Reordering: the order must be a permutation of 1..=n. A list that
+        // dropped or repeated a page is a different operation, not a
+        // reorder, so it is refused rather than reinterpreted.
+        assert!(spec(JobKind::PdfReorderPages, serde_json::json!({ "order": [1] })).is_ok());
+        let reordered =
+            spec(JobKind::PdfReorderPages, serde_json::json!({ "order": [3, 1, 2] })).unwrap();
+        match reordered {
+            // Kept in the requested order, NOT sorted: the order is the
+            // instruction.
+            JobSpec::PdfReorderPages(s) => assert_eq!(s.order, vec![3, 1, 2]),
+            other => panic!("expected a reorder spec, got {other:?}"),
+        }
+        for bad in [
+            serde_json::Value::Null,
+            serde_json::json!({ "order": [] }),
+            // Repeats a page.
+            serde_json::json!({ "order": [1, 1, 2] }),
+            // Drops page 2.
+            serde_json::json!({ "order": [1, 3] }),
+            // 1-based, like every other page number in this API.
+            serde_json::json!({ "order": [0, 1] }),
+        ] {
+            assert!(
+                spec(JobKind::PdfReorderPages, bad.clone()).is_err(),
+                "accepted {bad}"
+            );
+        }
+
+        // And all seven work on PDFs only.
+        for kind in [
+            JobKind::PdfProtect,
+            JobKind::PdfUnlock,
+            JobKind::PdfMetadataStrip,
+            JobKind::PdfPageNumbers,
+            JobKind::PdfDeletePages,
+            JobKind::PdfReorderPages,
+            JobKind::PdfExtractText,
+        ] {
+            let options = match kind {
+                JobKind::PdfProtect => serde_json::json!({ "password": "p" }),
+                JobKind::PdfDeletePages => serde_json::json!({ "pages": [1] }),
+                JobKind::PdfReorderPages => serde_json::json!({ "order": [1] }),
+                _ => serde_json::Value::Null,
+            };
+            let refused = spec_of(
+                kind,
+                &[SourceFormat::Office(OfficeFormat::Docx)],
+                None,
+                options,
+            );
+            assert_eq!(
+                refused.err().map(|e| e.code),
+                Some("UNSUPPORTED_CONVERSION"),
+                "{} accepted a DOCX",
+                kind.wire()
+            );
+        }
+    }
+
+    #[test]
+    fn extracted_text_is_the_one_job_that_does_not_produce_a_document() {
+        let spec = spec_of(
+            JobKind::PdfExtractText,
+            &[PDF],
+            None,
+            serde_json::Value::Null,
+        )
+        .unwrap();
+        assert_eq!(spec.output_extension(), "txt");
+        assert_eq!(spec.output_mime(), "text/plain; charset=utf-8");
+        assert_eq!(spec.output_name("rapor"), "rapor_metin.txt");
+
+        let dir = std::env::temp_dir().join(format!(
+            "meb_spec_text_out_{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let produced = dir.join("result.txt");
+
+        std::fs::write(&produced, "Öğrenci listesi\n").unwrap();
+        assert!(spec.validate_output(&produced).is_ok());
+        // An extraction that produced nothing, or bytes that are not text,
+        // is never published as a success.
+        std::fs::write(&produced, b"").unwrap();
+        assert!(spec.validate_output(&produced).is_err());
+        std::fs::write(&produced, [0xff, 0xfe, 0x00]).unwrap();
+        assert!(spec.validate_output(&produced).is_err());
+        assert!(spec.validate_output(&dir.join("absent.txt")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -43,6 +43,24 @@ const CAPABILITY_KINDS: &[(&str, &[JobKind])] = &[
             JobKind::PdfWatermark,
         ],
     ),
+    // The operations that need no external engine at all (lopdf). Grouped
+    // by what a user is doing, not by which library does it - and each
+    // group holds only kinds that are actually implemented, so a group
+    // turning AVAILABLE really does mean all of it works.
+    (
+        "pdf_protection",
+        &[JobKind::PdfProtect, JobKind::PdfUnlock],
+    ),
+    (
+        "pdf_page_management",
+        &[
+            JobKind::PdfDeletePages,
+            JobKind::PdfReorderPages,
+            JobKind::PdfPageNumbers,
+        ],
+    ),
+    ("pdf_metadata_removal", &[JobKind::PdfMetadataStrip]),
+    ("pdf_text_extraction", &[JobKind::PdfExtractText]),
     ("office_to_pdf", &[JobKind::OfficeConvert]),
     // PDF -> editable document. A capability of its own, because it is a
     // different (and experimental) operation - see `JobKind::PdfToOffice`.
@@ -122,6 +140,10 @@ pub async fn get_capabilities(State(state): State<AppState>, _owner: Owner) -> J
                     .map(OfficeFormat::canonical_extension),
             );
         }
+        // The one non-document output a PDF job can have.
+        if state.runners.supports(JobKind::PdfExtractText) {
+            outputs.push("txt");
+        }
         outputs
     };
 
@@ -180,6 +202,12 @@ pub async fn get_capabilities(State(state): State<AppState>, _owner: Owner) -> J
 fn available_message(id: &str) -> &'static str {
     match id {
         "pdf_structural_ops" => "Merge, split, compress, rotate and watermark PDF files.",
+        "pdf_protection" => "Add a password to a PDF file, or remove one.",
+        "pdf_page_management" => "Delete pages, re-order pages and add page numbers.",
+        "pdf_metadata_removal" => "Remove a PDF file's title, author and other metadata.",
+        "pdf_text_extraction" => {
+            "Extract the text a PDF already contains to a plain text file."
+        }
         "office_to_pdf" => "Convert Word, Excel and PowerPoint files to PDF.",
         "pdf_to_office" => {
             "Rebuild an editable Word document from a PDF. Experimental              (deneysel): layout and tables are often only approximated, and              a scanned PDF yields little usable structure."

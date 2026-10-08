@@ -134,6 +134,14 @@ impl RunnerRegistry {
     /// instead of accepting jobs that could only ever fail.
     pub fn production() -> Self {
         let registry = Self::new().with(JobKind::ImageConvert, Arc::new(NativeImageRunner));
+        // The pure-Rust PDF operations are registered UNCONDITIONALLY:
+        // they spawn nothing, so there is no tool to probe and no machine
+        // on which they could be missing. Gating them would be pretending
+        // to a dependency they do not have.
+        let registry = registry.with_all(
+            &crate::engines::LopdfRunner::KINDS,
+            Arc::new(crate::engines::LopdfRunner),
+        );
         let registry = register_external(
             registry,
             "ghostscript",
@@ -141,11 +149,20 @@ impl RunnerRegistry {
             crate::engines::GhostscriptRunner::detect()
                 .map(|r| Arc::new(r) as Arc<dyn ConversionRunner>),
         );
-        register_external(
+        let registry = register_external(
             registry,
             "libreoffice",
             &crate::engines::LibreOfficeRunner::KINDS,
             crate::engines::LibreOfficeRunner::detect()
+                .map(|r| Arc::new(r) as Arc<dyn ConversionRunner>),
+        );
+        // OCR needs Ghostscript AND Tesseract; `detect` resolves both, so
+        // this is gated on the conjunction of the two.
+        register_external(
+            registry,
+            "tesseract",
+            &crate::engines::TesseractRunner::KINDS,
+            crate::engines::TesseractRunner::detect()
                 .map(|r| Arc::new(r) as Arc<dyn ConversionRunner>),
         )
     }
@@ -153,6 +170,14 @@ impl RunnerRegistry {
     pub fn with(mut self, kind: JobKind, runner: Arc<dyn ConversionRunner>) -> Self {
         self.by_kind.insert(kind, runner);
         self
+    }
+
+    /// One runner for several kinds - an engine that backs a group of
+    /// operations, which is every engine here.
+    pub fn with_all(self, kinds: &[JobKind], runner: Arc<dyn ConversionRunner>) -> Self {
+        kinds.iter().fold(self, |registry, kind| {
+            registry.with(*kind, runner.clone())
+        })
     }
 
     /// One runner for every kind. A TEST seam (runners that block, panic or
@@ -192,9 +217,7 @@ fn register_external(
     match runner {
         Some(runner) => {
             tracing::info!(engine, kinds = ?kind_names, "external engine available");
-            kinds.iter().fold(registry, |registry, kind| {
-                registry.with(*kind, runner.clone())
-            })
+            registry.with_all(kinds, runner)
         }
         None => {
             tracing::warn!(
@@ -284,7 +307,15 @@ mod tests {
     /// *wired* depends on that tool being installed. Moving a kind off this
     /// list means implementing its runner and registering it in
     /// `production()` in the same change.
-    const AWAITING_AN_ENGINE: [JobKind; 2] = [JobKind::PdfWatermark, JobKind::PdfOcr];
+    const AWAITING_AN_ENGINE: [JobKind; 1] = [JobKind::PdfWatermark];
+
+    /// Kinds executed in this process, with no external tool at all. They
+    /// are always wired, on every machine.
+    fn in_process() -> Vec<JobKind> {
+        let mut kinds = vec![JobKind::ImageConvert];
+        kinds.extend(crate::engines::LopdfRunner::KINDS);
+        kinds
+    }
 
     /// The external engines `production()` wires, each with whether it
     /// resolved here. Mirrors that function, so a new engine added there
@@ -299,6 +330,10 @@ mod tests {
                 &crate::engines::LibreOfficeRunner::KINDS,
                 crate::engines::LibreOfficeRunner::detect().is_some(),
             ),
+            (
+                &crate::engines::TesseractRunner::KINDS,
+                crate::engines::TesseractRunner::detect().is_some(),
+            ),
         ]
     }
 
@@ -307,7 +342,7 @@ mod tests {
         // Every kind that is neither in-process nor awaiting an engine must
         // belong to exactly one external engine above.
         for kind in JobKind::ALL {
-            if kind == JobKind::ImageConvert || AWAITING_AN_ENGINE.contains(&kind) {
+            if in_process().contains(&kind) || AWAITING_AN_ENGINE.contains(&kind) {
                 continue;
             }
             let owners = external_engines()
@@ -352,8 +387,11 @@ mod tests {
                 }
             );
         }
-        // The native image pipeline is in-process, so it is always wired.
-        assert!(registry.supports(JobKind::ImageConvert));
+        // An in-process engine needs nothing from the machine, so it is
+        // wired wherever this test runs.
+        for kind in in_process() {
+            assert!(registry.supports(kind), "{}", kind.wire());
+        }
         // A kind with no engine at all is never wired, whatever is installed.
         for kind in AWAITING_AN_ENGINE {
             assert!(!registry.supports(kind));

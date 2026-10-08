@@ -19,6 +19,10 @@
 
 pub mod ghostscript;
 pub mod libreoffice;
+pub mod lopdf_ops;
+pub mod tesseract;
 
 pub use ghostscript::GhostscriptRunner;
 pub use libreoffice::LibreOfficeRunner;
+pub use lopdf_ops::LopdfRunner;
+pub use tesseract::TesseractRunner;

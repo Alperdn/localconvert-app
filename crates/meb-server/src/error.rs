@@ -234,6 +234,31 @@ pub fn job_error_message(code: &str) -> &'static str {
         "OFFICE_CONVERSION_FAILED" => "Belge dönüştürülemedi.",
         "OFFICE_ENGINE_TIMEOUT" => "Belge dönüştürme zaman sınırını aştı ve durduruldu.",
         "OFFICE_NO_OUTPUT" => "Dönüştürme motoru bu belgeden çıktı üretemedi.",
+        // The in-process (lopdf) PDF operations.
+        "PDF_READ_FAILED" => "PDF dosyası okunamadı veya bozuk.",
+        "PDF_WRITE_FAILED" => "Sonuç PDF dosyası yazılamadı.",
+        "PDF_PASSWORD_REQUIRED" => {
+            "Bu PDF parola korumalı. İşlem için parolayı girin veya önce korumayı kaldırın."
+        }
+        "PDF_WRONG_PASSWORD" => "Girilen parola bu PDF dosyasını açmıyor.",
+        "PDF_ALREADY_PROTECTED" => "Bu PDF zaten parola korumalı.",
+        "PDF_ENCRYPTION_UNSUPPORTED" => {
+            "Bu PDF dosyasının şifreleme yöntemi desteklenmiyor."
+        }
+        "PDF_NO_PAGES_LEFT" => {
+            "Bir PDF en az bir sayfa içermelidir; istenen silme işlemi tüm sayfaları kaldırıyor."
+        }
+        "PDF_NO_TEXT_FOUND" => {
+            "Bu PDF dosyasında çıkarılabilir metin yok. Taranmış bir belge ise metin tanıma (OCR) kullanın."
+        }
+        // OCR (Ghostscript renders the pages, Tesseract reads them).
+        "OCR_ENGINE_UNAVAILABLE" => "Metin tanıma motoru bu sunucuda kullanılamıyor.",
+        "OCR_FAILED" => "Belge üzerinde metin tanıma yapılamadı.",
+        "OCR_ENGINE_TIMEOUT" => "Metin tanıma zaman sınırını aştı ve durduruldu.",
+        "OCR_LANGUAGE_UNAVAILABLE" => {
+            "İstenen dil için metin tanıma verisi bu sunucuda kurulu değil."
+        }
+        "OCR_NO_PAGES" => "PDF sayfaları metin tanıma için görüntüye dönüştürülemedi.",
         "OUTPUT_VALIDATION_FAILED" => "Dönüştürme çıktısı doğrulanamadı.",
         "WORKSPACE_ERROR" => "Çalışma alanı hazırlanamadı.",
         _ => "Beklenmeyen bir sunucu hatası oluştu.",
